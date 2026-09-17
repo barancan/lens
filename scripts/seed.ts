@@ -27,7 +27,9 @@ export function buildSeedSql(): string {
   lines.push("");
   for (const theme of SEED_THEMES) {
     const tag = slug(theme);
-    const statement = `What does the evidence say about ${theme.charAt(0).toLowerCase()}${theme.slice(1)} in the context of partial reprogramming, rejuvenation and cancer risk?`;
+    // Keep acronyms (OSK, p53) as written; only lowercase ordinary words.
+    const phrase = /^[A-Z][a-z]/.test(theme) ? `${theme.charAt(0).toLowerCase()}${theme.slice(1)}` : theme;
+    const statement = `What does the evidence say about ${phrase} in the context of partial reprogramming, rejuvenation and cancer risk?`;
     const metadata = JSON.stringify({ seedTheme: theme, note: "Seeded research direction; not an established conclusion." });
     lines.push(
       `insert into knowledge_nodes (type, statement, summary, status, origin, tags, metadata)

@@ -39,7 +39,14 @@ export default async function RunDetailPage(props: PageProps<"/runs/[id]">) {
       {run.error ? (
         <Alert variant="destructive" className="mb-6">
           <AlertTitle>Run failed</AlertTitle>
-          <AlertDescription className="whitespace-pre-wrap">{run.error}</AlertDescription>
+          <AlertDescription className="whitespace-pre-wrap">
+            {run.error}
+            {task?.status === "failed" ? (
+              <div className="mt-2">
+                <ResumeButton taskId={task.id} />
+              </div>
+            ) : null}
+          </AlertDescription>
         </Alert>
       ) : null}
 

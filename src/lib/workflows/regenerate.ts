@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { applyRegeneratedDraft, getDraft, type DraftKind } from "@/lib/approvals/service";
+import type { PublishHints } from "@/lib/integrations/types";
 import { getComment } from "@/lib/repo/comments";
 import { composePost, finalizeCitations, gatherMaterial } from "./knowledge-ops";
 import { commentSystemPrompt } from "./prompts";
@@ -33,6 +34,9 @@ async function rewrite(state: RegenerateState, ctx: RunContext): Promise<Partial
       material,
       previous: { title: draft.title, body: draft.body },
       feedback: state.feedback,
+      // A draft suggested as a claim must keep its falsification requirement
+      // through a rewrite; without this the rewrite silently drops it.
+      postType: (draft.metadata.openlabs as Partial<PublishHints> | undefined)?.type,
     });
     const ref = ctx.llm.modelFor("post_writer");
     await applyRegeneratedDraft(

@@ -12,7 +12,15 @@ describe("schema & seed", () => {
     expect(nodes).toHaveLength(12);
     expect(nodes.every((n) => n.type === "question" && n.status === "open" && n.origin === "operator")).toBe(true);
     const settings = await t.sql`select key from agent_settings order by key`;
-    expect(settings.map((s) => s.key)).toEqual(["chat_agent", "comment_agent", "limits", "models", "project", "research_agent"]);
+    expect(settings.map((s) => s.key)).toEqual([
+      "chat_agent",
+      "comment_agent",
+      "limits",
+      "models",
+      "openlabs",
+      "project",
+      "research_agent",
+    ]);
   });
 
   it("rejects insights that are not agent-generated", async () => {

@@ -65,6 +65,7 @@ export function postWriterSystemPrompt(settings: Settings): string {
     `Writing style: ${a.writingStyle}`,
     `Citation requirements: ${a.citationRequirements}`,
     `Target length: about ${a.postLengthWords} words (excluding the source list).`,
+    `Publishing platform norms: stay within the project's declared research field. Never fabricate data or citations. State confidence in calibrated terms — a truthful "uncertain" is worth more than a confident guess, since machine-generated ideas tend to look more novel than they prove to be.`,
   ].join("\n\n");
 }
 

@@ -99,4 +99,25 @@ describe("settings/service", () => {
     const project = await removeFocusDirective(1);
     expect(project.focusDirectives).toEqual(["a", "c"]);
   });
+
+  describe("openlabs key", () => {
+    it("returns defaults on an empty table", async () => {
+      expect(await getSettings("openlabs")).toEqual(DEFAULT_SETTINGS.openlabs);
+    });
+
+    it("merges a partially stored object over defaults", async () => {
+      await upsertSettingValue("openlabs", { defaultPostType: "claim", pollComments: false });
+      const resolved = await getSettings("openlabs");
+      expect(resolved).toEqual({ ...DEFAULT_SETTINGS.openlabs, defaultPostType: "claim", pollComments: false });
+    });
+
+    it("falls back to defaults when defaultTopic is invalid", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await upsertSettingValue("openlabs", { ...DEFAULT_SETTINGS.openlabs, defaultTopic: "not-a-real-topic" });
+      const resolved = await getSettings("openlabs");
+      expect(resolved).toEqual(DEFAULT_SETTINGS.openlabs);
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+  });
 });

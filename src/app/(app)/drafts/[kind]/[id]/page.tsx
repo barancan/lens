@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ActionPanel } from "./action-panel";
+import { ActionPanel, type OpenLabsPublishDefaults, type OpenLabsPublishSuggestion, type ReplyPublishPreflight } from "./action-panel";
 import { AddCommentForm } from "./add-comment-form";
+import { LinkExternalPostForm } from "./link-external-post-form";
 import {
   EmptyState,
   NodeStatusBadge,
@@ -14,11 +15,14 @@ import {
 } from "@/components/common";
 import { availableActions } from "@/lib/approvals/lifecycle";
 import { DraftNotFoundError, getDraft } from "@/lib/approvals/service";
+import { isOpenLabsConfigured } from "@/lib/integrations/openlabs";
+import type { PostReception } from "@/lib/integrations/types";
 import { getComment, listComments } from "@/lib/repo/comments";
 import { getPost } from "@/lib/repo/posts";
 import { listReplies } from "@/lib/repo/replies";
-import { getKnowledgeService } from "@/lib/workflows/runtime";
+import { getSettings } from "@/lib/settings/service";
 import type { DraftMetadata } from "@/lib/types";
+import { getKnowledgeService } from "@/lib/workflows/runtime";
 
 /** Reply-specific fields the comment-reply workflow stows in `metadata` alongside the shared `DraftMetadata`. */
 interface ReplyDraftMetadata extends DraftMetadata {
@@ -71,6 +75,30 @@ export default async function DraftDetailPage(props: PageProps<"/drafts/[kind]/[
   const actions = availableActions(draft.status);
   const title = draft.kind === "post" ? draft.title : `Reply to comment on “${parentPost?.title ?? "…"}”`;
 
+  // What the client can't know on its own: whether OpenLabs is the active
+  // publisher, its behavior defaults, and this draft's own suggested hints.
+  const openLabsConfigured = isOpenLabsConfigured();
+  const openLabsSettings = await getSettings("openlabs");
+  const openLabsDefaults: OpenLabsPublishDefaults = {
+    defaultPostType: openLabsSettings.defaultPostType,
+    defaultTopic: openLabsSettings.defaultTopic,
+    defaultTags: openLabsSettings.defaultTags,
+  };
+  const rawSuggestion = metadata.openlabs as OpenLabsPublishSuggestion | undefined;
+  const openLabsSuggestion: OpenLabsPublishSuggestion | undefined = rawSuggestion
+    ? { type: rawSuggestion.type, topic: rawSuggestion.topic, tags: rawSuggestion.tags }
+    : undefined;
+  const replyPreflight: ReplyPublishPreflight | undefined =
+    draft.kind === "reply"
+      ? {
+          postExternalId: parentPost?.externalId ?? null,
+          postDraftId: draft.postId,
+          commentExternalId: comment?.externalId ?? null,
+        }
+      : undefined;
+
+  const reception = draft.kind === "post" ? (metadata.reception as PostReception | undefined) : undefined;
+
   return (
     <div>
       <PageHeader
@@ -101,6 +129,45 @@ export default async function DraftDetailPage(props: PageProps<"/drafts/[kind]/[
           </Link>
         }
       />
+
+      {draft.kind === "post" && draft.status === "published" && (
+        <Section title="On OpenLabs">
+          {draft.externalId ? (
+            <div className="flex flex-col gap-2 text-sm">
+              <a
+                href={draft.externalUrl ?? undefined}
+                target="_blank"
+                rel="noreferrer"
+                className="w-fit hover:underline"
+              >
+                View the live post ↗
+              </a>
+              {reception ? (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-muted-foreground">
+                  <span>{reception.upvotes} upvotes</span>
+                  <span>{reception.downvotes} downvotes</span>
+                  <span>{reception.commentCount} comments</span>
+                  <span>
+                    {reception.openDecision
+                      ? `Peer review open, ends ${formatDate(reception.openDecision.votingEndsAt)}`
+                      : "No open peer review"}
+                  </span>
+                  <span>as of {formatDate(reception.fetchedAt)}</span>
+                </div>
+              ) : (
+                <p className="text-muted-foreground">
+                  No reception snapshot yet — it appears after the next comment check.
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                LENS only reads votes and peer-review state here; it never votes or reacts on OpenLabs.
+              </p>
+            </div>
+          ) : (
+            <LinkExternalPostForm postId={draft.id} />
+          )}
+        </Section>
+      )}
 
       <Section title="Body">
         <div className="rounded-lg border bg-card p-4 text-sm whitespace-pre-wrap">{draft.body}</div>
@@ -226,6 +293,10 @@ export default async function DraftDetailPage(props: PageProps<"/drafts/[kind]/[
           actions={actions}
           initialTitle={draft.kind === "post" ? draft.title : null}
           initialBody={draft.body}
+          openLabsConfigured={openLabsConfigured}
+          openLabsDefaults={openLabsDefaults}
+          openLabsSuggestion={openLabsSuggestion}
+          replyPreflight={replyPreflight}
         />
       </Section>
 

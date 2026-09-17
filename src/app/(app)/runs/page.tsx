@@ -35,6 +35,7 @@ export default async function RunsPage() {
                 <TableHead>Status</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead>Updated</TableHead>
+                <TableHead>Error</TableHead>
                 <TableHead />
               </TableRow>
             </TableHeader>
@@ -50,6 +51,7 @@ export default async function RunsPage() {
                     </TableCell>
                     <TableCell>{formatDate(t.createdAt)}</TableCell>
                     <TableCell>{formatDate(t.updatedAt)}</TableCell>
+                    <TableCell className="max-w-md whitespace-normal text-destructive">{t.error ?? ""}</TableCell>
                     <TableCell>{canResume ? <ResumeButton taskId={t.id} /> : null}</TableCell>
                   </TableRow>
                 );
@@ -99,7 +101,9 @@ export default async function RunsPage() {
                     <TableCell>
                       {r.usage.inputTokens} / {r.usage.outputTokens}
                     </TableCell>
-                    <TableCell className="max-w-xs truncate text-destructive">{r.error ?? ""}</TableCell>
+                    <TableCell className="max-w-xs truncate text-destructive" title={r.error ?? undefined}>
+                      {r.error ?? ""}
+                    </TableCell>
                   </TableRow>
                 );
               })}

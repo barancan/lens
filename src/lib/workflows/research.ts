@@ -13,7 +13,7 @@ import {
   type StoreResult,
 } from "./knowledge-ops";
 import { researchSystemPrompt } from "./prompts";
-import type { BaseState, RunContext, WorkflowDefinition } from "./types";
+import { LimitExceededError, type BaseState, type RunContext, type WorkflowDefinition } from "./types";
 
 /**
  * Loop 1: Research → Knowledge → Post.
@@ -91,6 +91,7 @@ async function plan(state: ResearchState, ctx: RunContext): Promise<Partial<Rese
     { query: state.objective },
     () => k.searchKnowledge(state.objective, { limit: 8, includeChunks: false }),
     (r) => ({ nodes: r.nodes.length }),
+    { bookkeeping: true },
   );
   const { data } = await ctx.llm.structured(
     "research_planner",
@@ -162,8 +163,9 @@ async function search(state: ResearchState, ctx: RunContext): Promise<Partial<Re
           const key = resultKey(r);
           if (!seen.has(key)) seen.set(key, { ...r, key });
         }
-      } catch {
-        // Logged by trace; one failing source should not end the run.
+      } catch (err) {
+        // Logged by trace; one failing source should not end the run, but an exhausted budget should.
+        if (err instanceof LimitExceededError) throw err;
       }
     }
   }
@@ -251,9 +253,11 @@ async function read(state: ResearchState, ctx: RunContext): Promise<Partial<Rese
         { title: doc.title },
         () => ctx.deps.knowledge.upsertSource({ ...doc, maxChars: ctx.settings.limits.maxSourceChars }),
         (r) => ({ sourceId: r.source.id, created: r.created, chunks: r.chunks.length }),
+    { bookkeeping: true },
       );
       readSources.push({ sourceId: source.id, title: source.title, textKind: doc.textKind, newlyStored: created });
     } catch (err) {
+      if (err instanceof LimitExceededError) throw err;
       failures.push({ title: candidate.title, error: err instanceof Error ? err.message : String(err) });
     }
   }
@@ -326,6 +330,13 @@ const synthesisSchema = z.object({
   postTopic: z.string(),
   postAngle: z.string(),
   postRationale: z.string(),
+  postType: z
+    .enum(["discussion", "claim"])
+    .describe(
+      "Which post type to suggest. Choose \"claim\" ONLY when the update is a specific, testable proposition you can state a falsification test for. " +
+        "Choose \"discussion\" otherwise (open questions, synthesis, framing). Bias toward \"discussion\": our epistemic guardrails already prefer " +
+        "hedged, evidence-proportional language, and a claim automatically opens a public peer review.",
+    ),
   focusNodeIds: z.array(z.string()).max(6),
 });
 type Synthesis = z.infer<typeof synthesisSchema>;
@@ -344,6 +355,7 @@ async function synthesize(state: ResearchState, ctx: RunContext): Promise<Partia
     { query: state.objective },
     () => k.searchKnowledge(state.objective, { limit: 10, chunkLimit: 3 }),
     (r) => ({ nodes: r.nodes.length }),
+    { bookkeeping: true },
   );
   const allowed = new Set([...touched.map((n) => n.id), ...context.nodes.map((n) => n.node.id)]);
   const touchedLines = touched
@@ -369,7 +381,7 @@ ${renderKnowledgeContext(context, { maxChars: 8000 })}
 Tasks:
 1. Propose at most 3 insights: interpretations that connect stored nodes (e.g. tension between efficacy and safety findings, gaps in replication, model-organism limits). Each must cite derivedFrom node ids from the lists above. Do not restate a single claim as an insight.
 2. Propose at most 3 new open questions, with raisedBy node ids.
-3. Decide whether this warrants a public research update (postWorthy). If yes, give topic, angle, rationale, and up to 6 focusNodeIds.`,
+3. Decide whether this warrants a public research update (postWorthy). If yes, give topic, angle, rationale, postType, and up to 6 focusNodeIds.`,
         },
       ],
       maxTokens: 3000,
@@ -386,6 +398,7 @@ Tasks:
       { statement: insight.statement },
       () => k.createInsight({ statement: insight.statement, derivedFrom, confidence: insight.confidence, runId: ctx.runId }),
       (r) => ({ id: r.node.id, created: r.created }),
+    { bookkeeping: true },
     );
     if (created) stored.createdNodeIds.push(node.id);
   }
@@ -405,6 +418,7 @@ async function draft(state: ResearchState, ctx: RunContext): Promise<Partial<Res
     angle: s.postAngle,
     rationale: `Research objective: ${state.objective}\n${s.postRationale}`,
     focusNodeIds: s.focusNodeIds,
+    postType: s.postType,
   });
   return { postId: post.id };
 }

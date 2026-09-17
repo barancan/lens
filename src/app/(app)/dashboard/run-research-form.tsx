@@ -23,7 +23,10 @@ export function RunResearchForm() {
         urls,
       });
       if (result.ok) {
-        toast.success(`Research task launched (${result.data?.taskId ?? "unknown"})`);
+        toast.success("Research task launched", {
+          description: "It runs in the background. Progress and errors appear on the Runs page.",
+          action: { label: "View runs", onClick: () => router.push("/runs") },
+        });
         setObjective("");
         setUrls("");
         router.refresh();

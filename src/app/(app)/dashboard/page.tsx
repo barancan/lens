@@ -11,7 +11,9 @@ import {
   formatConfidence,
   formatDate,
 } from "@/components/common";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { getCommentSource } from "@/lib/approvals/comment-source";
 import { listPosts } from "@/lib/repo/posts";
 import { listReplies } from "@/lib/repo/replies";
 import { listRuns } from "@/lib/repo/runs";
@@ -20,16 +22,18 @@ import { getSettings } from "@/lib/settings/service";
 import { TASK_STATUSES } from "@/lib/types";
 import { getKnowledgeService } from "@/lib/workflows/runtime";
 import { formatDuration } from "../runs/format";
+import { PollCommentsButton } from "./poll-comments-button";
 import { RunResearchForm } from "./run-research-form";
 
 export default async function DashboardPage() {
   const k = getKnowledgeService();
-  const [project, stats, taskCounts, activeTasks, recentNodes, openQuestions, awaitingPosts, awaitingReplies, runs] =
+  const [project, stats, taskCounts, activeTasks, failedTasks, recentNodes, openQuestions, awaitingPosts, awaitingReplies, runs] =
     await Promise.all([
       getSettings("project"),
       k.stats(),
       countTasksByStatus(),
       listTasks({ statuses: ["queued", "running"], limit: 20 }),
+      listTasks({ statuses: ["failed"], limit: 5 }),
       k.listNodes({ types: ["claim", "observation", "insight"], limit: 8 }),
       k.listNodes({ types: ["question"], statuses: ["open"], limit: 8 }),
       listPosts({ statuses: ["awaiting_review"], limit: 8 }),
@@ -38,6 +42,9 @@ export default async function DashboardPage() {
     ]);
 
   const hasActiveTasks = activeTasks.length > 0;
+  // Only render the poll button when a comment source is actually
+  // configured — otherwise clicking it would always no-op.
+  const canPollComments = getCommentSource() !== null;
 
   const statTiles: { label: string; value: number }[] = [
     { label: "Claims", value: stats.nodesByType.claim },
@@ -83,6 +90,25 @@ export default async function DashboardPage() {
       </div>
 
       <Section title="Research status" actions={<AutoRefresh enabled={hasActiveTasks} />}>
+        {failedTasks.length > 0 ? (
+          <Alert variant="destructive" className="mb-3">
+            <AlertTitle>
+              {failedTasks.length === 1 ? "1 task failed" : `${failedTasks.length} tasks failed`}
+            </AlertTitle>
+            <AlertDescription>
+              <ul className="space-y-1">
+                {failedTasks.map((t) => (
+                  <li key={t.id}>
+                    <span className="font-medium">{t.objective || t.id}</span>: {t.error ?? "unknown error"}
+                  </li>
+                ))}
+              </ul>
+              <Link href="/runs" className="underline">
+                Review and resume on the Runs page
+              </Link>
+            </AlertDescription>
+          </Alert>
+        ) : null}
         <div className="mb-3 flex flex-wrap gap-1.5">
           {TASK_STATUSES.map((s) => (
             <Tag key={s} tone="neutral">
@@ -157,7 +183,7 @@ export default async function DashboardPage() {
         )}
       </Section>
 
-      <Section title="Pending approvals">
+      <Section title="Pending approvals" actions={canPollComments ? <PollCommentsButton /> : null}>
         {approvals.length === 0 ? (
           <EmptyState>Nothing awaiting review.</EmptyState>
         ) : (
@@ -186,6 +212,7 @@ export default async function DashboardPage() {
                 <TableHead>Started</TableHead>
                 <TableHead>Duration</TableHead>
                 <TableHead>Tokens in/out</TableHead>
+                <TableHead>Error</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -204,6 +231,9 @@ export default async function DashboardPage() {
                   <TableCell>{formatDuration(r.startedAt, r.finishedAt)}</TableCell>
                   <TableCell>
                     {r.usage.inputTokens} / {r.usage.outputTokens}
+                  </TableCell>
+                  <TableCell className="max-w-xs truncate text-destructive" title={r.error ?? undefined}>
+                    {r.error ?? ""}
                   </TableCell>
                 </TableRow>
               ))}

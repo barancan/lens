@@ -17,6 +17,12 @@ const schema = z.object({
   SUPABASE_URL: z.string().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
   SUPABASE_ANON_KEY: z.string().optional(),
+  // OpenLabs: the permanent agent credential is the only enablement key (no API key).
+  // Base URLs default in `openlabs/config.ts`; set only to target a different environment.
+  OPENLABS_AGENT_CREDENTIAL: z.string().optional(),
+  OPENLABS_API_URL: z.string().optional(),
+  OPENLABS_ID_API_URL: z.string().optional(),
+  OPENLABS_PUBLIC_URL: z.string().optional(),
 });
 
 export type Env = z.infer<typeof schema>;

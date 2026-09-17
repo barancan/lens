@@ -1,0 +1,74 @@
+import { createComment } from "@/lib/repo/comments";
+import { createTask, getTask } from "@/lib/repo/tasks";
+import type { Comment, Task, TaskOrigin } from "@/lib/types";
+import { commentWorkflow } from "./comment";
+import { executeWorkflow, type RunOutcome } from "./engine";
+import { regenerateWorkflow } from "./regenerate";
+import { researchWorkflow } from "./research";
+import type { AgentDeps } from "./types";
+
+/**
+ * Task entry points. UI routes, cron and chat tools call these; they create a
+ * task row and hand execution to `deps.launchTask` (background) or run inline.
+ */
+
+export async function runTask(taskId: string, deps: AgentDeps, opts: { resume?: boolean } = {}): Promise<RunOutcome> {
+  const task = await getTask(taskId);
+  if (!task) throw new Error(`Task ${taskId} not found`);
+  switch (task.type) {
+    case "research":
+      return executeWorkflow(researchWorkflow, taskId, deps, opts);
+    case "comment_reply":
+      return executeWorkflow(commentWorkflow, taskId, deps, opts);
+    case "regenerate_draft":
+      return executeWorkflow(regenerateWorkflow, taskId, deps, opts);
+  }
+}
+
+export async function startResearch(
+  deps: AgentDeps,
+  input: { objective?: string; urls?: string[]; origin: TaskOrigin; parentTaskId?: string | null },
+): Promise<Task> {
+  const objective =
+    input.objective?.trim() ||
+    "Advance the core research question: identify the most important open question or weakly supported claim and look for new primary evidence.";
+  const task = await createTask({
+    type: "research",
+    objective,
+    origin: input.origin,
+    input: input.urls?.length ? { urls: input.urls } : {},
+    parentTaskId: input.parentTaskId ?? null,
+  });
+  deps.launchTask(task.id);
+  return task;
+}
+
+/** Record a comment on a published post and start the reply workflow. */
+export async function ingestComment(
+  deps: AgentDeps,
+  input: { postId: string; author: string; body: string; externalId?: string | null },
+): Promise<{ comment: Comment; task: Task }> {
+  const comment = await createComment(input);
+  return { comment, task: await ingestCommentTask(deps, comment.id, `Respond to comment by ${input.author}`) };
+}
+
+/** Start the reply workflow for an already-stored comment. */
+export async function ingestCommentTask(deps: AgentDeps, commentId: string, objective = "Respond to comment"): Promise<Task> {
+  const task = await createTask({ type: "comment_reply", objective, origin: "user", input: { commentId } });
+  deps.launchTask(task.id);
+  return task;
+}
+
+export async function startRegeneration(
+  deps: AgentDeps,
+  input: { kind: "post" | "reply"; draftId: string; feedback: string },
+): Promise<Task> {
+  const task = await createTask({
+    type: "regenerate_draft",
+    objective: `Regenerate ${input.kind} ${input.draftId}`,
+    origin: "user",
+    input,
+  });
+  deps.launchTask(task.id);
+  return task;
+}

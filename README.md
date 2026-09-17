@@ -1,36 +1,162 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LENS
 
-## Getting Started
+LENS is a single-purpose scientific research agent. It investigates one question:
 
-First, run the development server:
+> **Can partial cellular reprogramming reverse aspects of biological aging without creating unacceptable cancer risk?**
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+LENS builds up structured, provenance-tracked knowledge from the literature. It drafts research updates and replies to comments on them. **Nothing is published without explicit human approval.** One operator runs it through a private web UI.
+
+- **Stack:** Next.js 16 (App Router) · TypeScript · Tailwind + shadcn/ui · Postgres + pgvector (Supabase) · direct Anthropic and OpenAI APIs.
+- **Not used:** agent frameworks, a separate vector or graph database, background workers.
+
+---
+
+## Architecture
+
+```
+Browser ──server actions / route handlers──▶ domain layer (src/lib)
+                                              ├─ auth/           single-user login, signed session cookie
+                                              ├─ repo/           the ONLY code that issues SQL
+                                              ├─ knowledge/      Knowledge API, confidence heuristic, hybrid retrieval
+                                              ├─ llm/            provider-neutral types, registry, structured output
+                                              ├─ providers/      anthropic · openai · bios (stub) · local (stub)
+                                              ├─ integrations/   research sources · openlabs (stub) · bios (stub) · mcp (interface)
+                                              ├─ tools/          AgentTool interface + chat tools
+                                              ├─ workflows/      explicit step machines: research, comment, regenerate, chat
+                                              ├─ approvals/      draft lifecycle + Publisher adapter
+                                              └─ settings/       DB-stored agent configuration (zod-validated)
+Vercel Cron ──▶ /api/cron/research ──▶ task ──▶ research workflow
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Boundaries
+- **Business logic sees only neutral LLM types.** Workflows use `LLMRequest` / `LLMResponse` from `src/lib/llm/types.ts`, and resolve models by *workflow key* (`research_planner`, `post_writer`, …) from the `models` setting. Anthropic and OpenAI SDK formats appear only in `src/lib/providers/<name>/`.
+- **Workflows never touch tables.** Knowledge goes through `KnowledgeService` (`src/lib/knowledge/service.ts`), and operational data goes through `src/lib/repo/*`.
+- **External systems are adapters.** Research sources implement `ResearchSource`. Publishing and comment ingestion implement `Publisher` / `CommentSource`.
+- **Structured LLM output is always validated.** `generateStructured()` validates against a zod schema and allows one repair attempt; anything still invalid fails the step.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Knowledge model (`supabase/migrations`)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Table | Purpose |
+| --- | --- |
+| `sources`, `source_chunks` | Papers, preprints, pages and comments. Chunks carry pgvector embeddings. |
+| `knowledge_nodes` | `claim`, `observation`, `hypothesis`, `insight` or `question`, each with `origin` (`source_derived`, `agent_generated` or `operator`), `status`, `confidence` and an embedding. |
+| `knowledge_node_history` | Every confidence and status change, with a reason. |
+| `evidence` | Links a claim-like node to a **verbatim quote** from a source. Types: supports, contradicts, replicates, challenges, contextualizes. |
+| `knowledge_edges` | Relationships between nodes: supports, contradicts, derived_from, raises, depends_on, related_to, refines, supersedes. |
+| `posts`, `comments`, `replies` | Drafts and the approval lifecycle. |
+| `tasks`, `agent_runs` | Checkpointed task state; step, tool-call, LLM-call and token logs. |
+| `agent_settings`, `chat_threads`, `chat_messages` | Configuration and operator chat. |
 
-## Learn More
+### Scientific guardrails
+These are enforced in code, not only in prompts:
+- **Evidence needs a real source and a verbatim quote.** The quote must be found in that source's text; otherwise `ProvenanceError` is raised and the finding is recorded as rejected.
+- **Insights are always agent-generated.** A DB constraint enforces this. An insight must be `derived_from` existing nodes, and can never be attached as evidence.
+- **Comment text never becomes evidence.** A comment can raise a question; evidence comes only from sources the agent actually fetched.
+- **Confidence is a transparent heuristic** over evidence strength and independence (`src/lib/knowledge/confidence.ts`). Statuses are `supported`, `contested`, `weak` and `unresolved` rather than true/false.
+- **Retrieval labels provenance.** Context passed to models is labelled `[SOURCE QUOTE]` / `[SOURCE EXCERPT]` or `[CLAIM]` / `[AGENT INSIGHT]` / `[QUESTION]`, so the model can tell source material from interpretation.
+- **Post citations are checked.** Citations are validated against the sources actually retrieved; invented `[n]` markers are removed, and the numbered source list is generated by code.
 
-To learn more about Next.js, take a look at the following resources:
+### Workflows (`src/lib/workflows`)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+All workflows run on one engine (`engine.ts`):
+- steps run in a fixed order, with no recursion;
+- state is checkpointed to `tasks.state` after every step, so a failed or timed-out task can be **resumed** and completed steps are skipped;
+- every tool and LLM call is logged to `agent_runs`;
+- limits (queries, sources, findings, tool calls, follow-ups, chat rounds) come from the `limits` setting.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Workflow | Steps |
+| --- | --- |
+| **Research** (loop 1) | plan → search → select → read → extract → compare → store → synthesize → draft |
+| **Comment** (loop 2) | classify → research (bounded) → update_knowledge → draft_reply |
+| **Regenerate** | rewrite a post or reply using operator feedback (earlier versions are kept in `metadata.revisions`) |
+| **Chat** | bounded tool-use loop. Tools: search_knowledge, get_claim, list_knowledge, get_source, search_literature, start_research, draft_post, respond_to_comment, list_unprocessed_comments, record_question, add_focus_directive, list_runs, get_run, get_task |
 
-## Deploy on Vercel
+**Long-running work.** A task is created in the database and then executed with `after()` inside a route with `maxDuration = 300`. A task that exceeds the limit stays `running`. You can resume it from the Runs page, and the cron also resumes it once it is stale.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### Approval lifecycle
+```
+draft → awaiting_review → approved → published
+               │   ▲
+               ▼   │ regenerate
+            rejected
+```
+- **Edit** keeps `awaiting_review` and records a revision.
+- **Publish** calls the configured `Publisher`. In the MVP, `ManualPublisher` just records that you posted the draft yourself.
+- **OpenLabs** is a stub adapter (`src/lib/integrations/openlabs`).
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+---
+
+## Local development
+
+Requirements: Node 20+ and pnpm. Docker is **not** required: local Postgres is [PGlite](https://pglite.dev) (Postgres in WASM, with pgvector).
+
+1. Install dependencies:
+   ```bash
+   pnpm install
+   ```
+2. Create your local env file:
+   ```bash
+   cp .env.example .env.local
+   ```
+3. Generate the login hash, and paste the escaped line it prints into `.env.local`:
+   ```bash
+   pnpm hash-password 'your-password'
+   ```
+4. Generate a session secret and set it as `SESSION_SECRET`:
+   ```bash
+   openssl rand -base64 48
+   ```
+5. Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and
+   `DATABASE_URL=postgres://postgres:postgres@127.0.0.1:54322/postgres`.
+6. In terminal 1, start the local database. It applies migrations on start and keeps running:
+   ```bash
+   pnpm db:local
+   ```
+7. In terminal 2, seed the database and start the app:
+   ```bash
+   pnpm db:seed        # research question, 12 research themes (as open questions), default settings
+   pnpm dev            # http://localhost:3000
+   ```
+
+To target a real Supabase database instead, set `DATABASE_URL` and run `pnpm db:migrate && pnpm db:seed`.
+
+**Useful commands**
+
+| Command | |
+| --- | --- |
+| `pnpm test` | Vitest: domain logic against real Postgres (PGlite), with LLMs mocked |
+| `pnpm typecheck` / `pnpm lint` | |
+| `pnpm db:migrate` | Apply `supabase/migrations/*.sql` to `DATABASE_URL` |
+| `pnpm db:seed` | Idempotent seed |
+| `pnpm db:seed:sql` | Regenerate `supabase/seed.sql` |
+
+The seed deliberately contains **no** claims or evidence. The 12 themes are stored as open questions: starting directions, not conclusions. Seeded questions have no embeddings until **Knowledge → Backfill embeddings** runs (or the first research run touches them).
+
+---
+
+## Deployment (Vercel + Supabase)
+
+1. **Supabase.** Create a project, then either:
+   - run `supabase db push` with the migrations in `supabase/migrations` (and seed with `supabase/seed.sql`), **or**
+   - set `DATABASE_URL` locally to the project's connection string and run `pnpm db:migrate && pnpm db:seed`.
+
+   Row-level security is enabled on all tables. The app connects directly with the database role, so the REST API exposes nothing.
+2. **Vercel.** Import the repository and set these environment variables:
+   - `DATABASE_URL`: the **transaction pooler** URL, port 6543. Prepared statements are disabled in the client for pooler compatibility.
+   - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
+   - `APP_USERNAME`, `APP_PASSWORD_HASH` (the raw bcrypt hash; no escaping in the dashboard), `SESSION_SECRET`
+   - `CRON_SECRET`
+   - optionally `CONTACT_EMAIL` and the `SUPABASE_*` values
+3. **Cron.** `vercel.json` schedules `/api/cron/research` daily at 06:00 UTC. It skips if research is already in progress, and resumes a stale task instead of starting a new one. Hobby plans allow daily crons; adjust the schedule on Pro.
+4. **Function duration.** Agent routes declare `maxDuration = 300`. Enable Fluid Compute (the default for new projects) so this limit is available. Lower `limits.maxSourcesPerRun` if runs approach the limit.
+
+---
+
+## Extending
+
+| To add… | Do this |
+| --- | --- |
+| **A model provider** (e.g. BIOS, a local model) | Implement `LLMProvider` in `src/lib/providers/<name>/adapter.ts` and register it in `src/lib/llm/registry.ts`. Then select it per workflow in Settings. |
+| **A research source** (PubMed E-utilities, bioRxiv API, Reddit, web search, BIOS) | Implement `ResearchSource` in `src/lib/integrations/research/`, register it in `registry.ts`, and enable it in Settings → Project. |
+| **OpenLabs** | Implement `OpenLabsPublisher` / `OpenLabsCommentSource`. `getPublisher()` picks the first enabled publisher automatically. A comment poller can call `ingestComment()` for each new comment. |
+| **MCP tools** | Adapt `McpToolServer` tools into `AgentTool`s (`src/lib/integrations/mcp`). |

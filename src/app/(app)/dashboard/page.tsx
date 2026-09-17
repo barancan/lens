@@ -2,18 +2,20 @@ import Link from "next/link";
 import { AutoRefresh } from "@/components/auto-refresh";
 import {
   EmptyState,
+  formatConfidence,
+  formatDate,
+  ImpactBadge,
   NodeStatusBadge,
   NodeTypeBadge,
   PageHeader,
   Section,
   StatusBadge,
   Tag,
-  formatConfidence,
-  formatDate,
 } from "@/components/common";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getCommentSource } from "@/lib/approvals/comment-source";
+import { MAX_DRILL_DOWN_QUEUE } from "@/lib/knowledge/service";
 import { listPosts } from "@/lib/repo/posts";
 import { listReplies } from "@/lib/repo/replies";
 import { listRuns } from "@/lib/repo/runs";
@@ -22,24 +24,40 @@ import { getSettings } from "@/lib/settings/service";
 import { TASK_STATUSES } from "@/lib/types";
 import { getKnowledgeService } from "@/lib/workflows/runtime";
 import { formatDuration } from "../runs/format";
+import { DrillDownQueue } from "./drill-down-queue";
 import { PollCommentsButton } from "./poll-comments-button";
 import { RunResearchForm } from "./run-research-form";
 
 export default async function DashboardPage() {
   const k = getKnowledgeService();
-  const [project, stats, taskCounts, activeTasks, failedTasks, recentNodes, openQuestions, awaitingPosts, awaitingReplies, runs] =
-    await Promise.all([
-      getSettings("project"),
-      k.stats(),
-      countTasksByStatus(),
-      listTasks({ statuses: ["queued", "running"], limit: 20 }),
-      listTasks({ statuses: ["failed"], limit: 5 }),
-      k.listNodes({ types: ["claim", "observation", "insight"], limit: 8 }),
-      k.listNodes({ types: ["question"], statuses: ["open"], limit: 8 }),
-      listPosts({ statuses: ["awaiting_review"], limit: 8 }),
-      listReplies({ statuses: ["awaiting_review"], limit: 8 }),
-      listRuns({ limit: 8 }),
-    ]);
+  const [
+    project,
+    limits,
+    stats,
+    taskCounts,
+    activeTasks,
+    failedTasks,
+    recentNodes,
+    openQuestions,
+    awaitingPosts,
+    awaitingReplies,
+    runs,
+    drillDownQueue,
+  ] = await Promise.all([
+    getSettings("project"),
+    getSettings("limits"),
+    k.stats(),
+    countTasksByStatus(),
+    listTasks({ statuses: ["queued", "running"], limit: 20 }),
+    listTasks({ statuses: ["failed"], limit: 5 }),
+    k.listNodes({ types: ["claim", "observation", "insight"], limit: 8 }),
+    k.listNodes({ types: ["question"], statuses: ["open"], limit: 8 }),
+    listPosts({ statuses: ["awaiting_review"], limit: 8 }),
+    listReplies({ statuses: ["awaiting_review"], limit: 8 }),
+    listRuns({ limit: 8 }),
+    // The whole queue: it is capped, and the operator orders it by hand.
+    k.listDrillDownQueue(MAX_DRILL_DOWN_QUEUE),
+  ]);
 
   const hasActiveTasks = activeTasks.length > 0;
   // Only render the poll button when a comment source is actually
@@ -142,9 +160,19 @@ export default async function DashboardPage() {
         )}
       </Section>
 
-      <Section title="Run research">
-        <RunResearchForm />
-      </Section>
+      <div className="mb-8 grid items-start gap-6 lg:grid-cols-4">
+        <Section title="Run research" className="mb-0 lg:col-span-1">
+          <RunResearchForm />
+        </Section>
+
+        <Section title="Queued for drill-down" className="mb-0 lg:col-span-3">
+          <DrillDownQueue
+            nodes={drillDownQueue}
+            maxTargets={limits.maxDrillDownTargets}
+            maxQueue={MAX_DRILL_DOWN_QUEUE}
+          />
+        </Section>
+      </div>
 
       <Section title="Recent findings">
         {recentNodes.length === 0 ? (
@@ -158,6 +186,7 @@ export default async function DashboardPage() {
                     <NodeTypeBadge type={n.type} origin={n.origin} />
                     <NodeStatusBadge status={n.status} />
                     <span className="text-xs text-muted-foreground">confidence {formatConfidence(n.confidence)}</span>
+                    <ImpactBadge impact={n.impact} title={n.impactExplanation?.reasons.join("\n")} />
                   </div>
                   <p className="text-sm">{n.statement}</p>
                 </Link>

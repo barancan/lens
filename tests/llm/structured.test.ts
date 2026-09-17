@@ -9,8 +9,8 @@ function baseRequest(): Omit<LLMRequest, "responseSchema" | "tools" | "toolChoic
   return { model: "test-model", messages: [{ role: "user", content: "what is 2+2?" }] };
 }
 
-function fakeResponse(text: string): LLMResponse {
-  return { text, toolCalls: [], stopReason: "end", usage: { inputTokens: 1, outputTokens: 1 }, model: "test-model", provider: "anthropic" };
+function fakeResponse(text: string, stopReason: LLMResponse["stopReason"] = "end"): LLMResponse {
+  return { text, toolCalls: [], stopReason, usage: { inputTokens: 1, outputTokens: 1 }, model: "test-model", provider: "anthropic" };
 }
 
 function fakeProvider(generate: (request: LLMRequest) => Promise<LLMResponse>): LLMProvider {
@@ -54,6 +54,37 @@ describe("generateStructured", () => {
       expect(typeof lastMessage?.content === "string" && lastMessage.content.includes("Issues")).toBe(true);
       return fakeResponse('{"answer":4}');
     });
+    const provider = fakeProvider(generate);
+
+    const result = await generateStructured(provider, baseRequest(), { name: "answer", schema });
+
+    expect(result.data).toEqual({ answer: 4 });
+    expect(result.attempts).toBe(2);
+    expect(generate).toHaveBeenCalledTimes(2);
+  });
+
+  it("repairs a response cut off at max_tokens even when its prefix validates, telling the model it was truncated", async () => {
+    let call = 0;
+    const generate = vi.fn(async (request: LLMRequest) => {
+      call += 1;
+      // A forced tool call truncated by max_tokens comes back as the well-formed prefix of the object.
+      if (call === 1) return fakeResponse('{"answer":4}', "max_tokens");
+      const lastMessage = request.messages[request.messages.length - 1];
+      const content = typeof lastMessage?.content === "string" ? lastMessage.content : "";
+      expect(content).toMatch(/cut off by the output token limit/);
+      expect(content).toContain("valid but incomplete");
+      return fakeResponse('{"answer":4}');
+    });
+    const provider = fakeProvider(generate);
+
+    const result = await generateStructured(provider, baseRequest(), { name: "answer", schema });
+
+    expect(result.data).toEqual({ answer: 4 });
+    expect(result.attempts).toBe(2);
+  });
+
+  it("keeps a valid but truncated repair rather than discarding it", async () => {
+    const generate = vi.fn(async () => fakeResponse('{"answer":4}', "max_tokens"));
     const provider = fakeProvider(generate);
 
     const result = await generateStructured(provider, baseRequest(), { name: "answer", schema });

@@ -63,6 +63,31 @@ export interface SourceChunk {
   metadata: Record<string, unknown>;
 }
 
+/**
+ * The audit trail behind an impact score. Persisted on the node so the detail
+ * page can show why the number is what it is. Produced by `computeImpact`.
+ */
+export interface ImpactComponents {
+  /** 0..1 — room this finding has to move; the product of the three below. */
+  headroom: number;
+  statusHeadroom: number;
+  evidenceHeadroom: number;
+  replicationHeadroom: number;
+  /** 0..1 — saturated sum of what its neighbours stand to gain. */
+  reach: number;
+  /** The pre-saturation coupled mass behind `reach`. */
+  couplingMass: number;
+  edgeNeighbours: number;
+  similarNeighbours: number;
+}
+
+/** What is stored in `knowledge_nodes.impact_components`. */
+export interface ImpactExplanation {
+  components: ImpactComponents;
+  /** Operator-facing, e.g. "2 agent insights were derived from this". */
+  reasons: string[];
+}
+
 export interface KnowledgeNode {
   id: string;
   type: NodeType;
@@ -75,6 +100,21 @@ export interface KnowledgeNode {
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+  /**
+   * How much drilling into this finding would move OTHER findings. Null means
+   * "not scored yet" (no links and no embedding), never "zero leverage".
+   * Unlike `confidence` this depends on the node's neighbourhood, so it is
+   * recomputed in batches and `impactComputedAt` shows how fresh it is.
+   */
+  impact: number | null;
+  impactExplanation: ImpactExplanation | null;
+  impactComputedAt: string | null;
+  /** The operator's drill-down queue: set means "target this next run". */
+  drillDownRequestedAt: string | null;
+  drillDownNote: string | null;
+  drillDownConsumedAt: string | null;
+  /** Operator-controlled queue order. Lower comes first. */
+  drillDownPosition: number | null;
 }
 
 export interface NodeHistoryEntry {

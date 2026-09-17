@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import {
   EmptyState,
   EvidenceTypeBadge,
+  ImpactBadge,
   NodeStatusBadge,
   NodeTypeBadge,
   PageHeader,
@@ -10,10 +11,12 @@ import {
   Tag,
   formatConfidence,
   formatDate,
+  formatImpact,
 } from "@/components/common";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { EvidenceWithSource } from "@/lib/types";
 import { getKnowledgeService } from "@/lib/workflows/runtime";
+import { DrillDownButton } from "../../drill-down-button";
 
 export default async function NodeDetailPage(props: PageProps<"/knowledge/nodes/[id]">) {
   const { id } = await props.params;
@@ -21,7 +24,7 @@ export default async function NodeDetailPage(props: PageProps<"/knowledge/nodes/
   const detail = await k.getClaim(id);
   if (!detail) notFound();
 
-  const { node, supporting, contradicting, contextual, related, questions, sources, history } = detail;
+  const { node, supporting, contradicting, contextual, related, questions, sources, history, impactNeighbours } = detail;
 
   return (
     <div>
@@ -32,14 +35,25 @@ export default async function NodeDetailPage(props: PageProps<"/knowledge/nodes/
           <>
             <NodeTypeBadge type={node.type} origin={node.origin} />
             <NodeStatusBadge status={node.status} />
+            <DrillDownButton
+              nodeId={node.id}
+              requested={node.drillDownRequestedAt !== null && node.drillDownConsumedAt === null}
+              note={node.drillDownNote}
+            />
           </>
         }
       />
 
-      <dl className="mb-8 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+      <dl className="mb-8 grid grid-cols-2 gap-4 text-sm sm:grid-cols-5">
         <div>
           <dt className="text-xs text-muted-foreground">Confidence</dt>
           <dd>{formatConfidence(node.confidence)}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-muted-foreground">Impact</dt>
+          <dd>
+            <ImpactBadge impact={node.impact} />
+          </dd>
         </div>
         <div>
           <dt className="text-xs text-muted-foreground">Created</dt>
@@ -58,6 +72,68 @@ export default async function NodeDetailPage(props: PageProps<"/knowledge/nodes/
       <EvidenceSection title="Supporting evidence" items={supporting} />
       <EvidenceSection title="Contradictory evidence" items={contradicting} />
       <EvidenceSection title="Contextual evidence" items={contextual} />
+
+      <Section title="Potential impact">
+        <p className="mb-3 max-w-3xl text-sm text-muted-foreground">
+          How much drilling into this finding would move <em>other</em> findings: its own room to move, multiplied by
+          what the findings it connects to stand to gain. A transparent heuristic over recorded relationships and
+          embedding similarity — not a model judgement.
+        </p>
+
+        {node.impactExplanation === null ? (
+          <EmptyState>
+            Not scored yet. Use <strong>Recompute impact</strong> on the Knowledge page.
+          </EmptyState>
+        ) : (
+          <>
+            <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
+              <ImpactBadge impact={node.impact} />
+              <span className="text-muted-foreground">
+                = headroom {formatImpact(node.impactExplanation.components.headroom)} × reach{" "}
+                {formatImpact(node.impactExplanation.components.reach)}
+              </span>
+              {node.impactComputedAt ? (
+                <span className="text-xs text-muted-foreground">· scored {formatDate(node.impactComputedAt)}</span>
+              ) : null}
+            </div>
+
+            <ul className="mb-4 space-y-1 text-sm">
+              {node.impactExplanation.reasons.map((reason) => (
+                <li key={reason} className="text-muted-foreground">
+                  · {reason}
+                </li>
+              ))}
+            </ul>
+
+            {impactNeighbours.length === 0 ? null : (
+              <>
+                <h3 className="mb-2 text-xs font-medium uppercase text-muted-foreground">Findings that would move</h3>
+                <ul className="space-y-2">
+                  {impactNeighbours.map((n) => (
+                    <li key={n.node.id} className="rounded-md border p-2 text-sm">
+                      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                        <Tag tone="neutral">
+                          {n.link.kind === "edge"
+                            ? `${n.link.direction === "incoming" ? "←" : "→"} ${n.link.relationshipType.replace(/_/g, " ")}`
+                            : `~ similar ${n.link.similarity.toFixed(2)}`}
+                        </Tag>
+                        <NodeTypeBadge type={n.node.type} origin={n.node.origin} />
+                        <NodeStatusBadge status={n.node.status} />
+                        <span className="text-xs text-muted-foreground" title="This finding's share of the coupled mass">
+                          gain {n.gain.toFixed(2)}
+                        </span>
+                      </div>
+                      <Link href={`/knowledge/nodes/${n.node.id}`} className="hover:underline">
+                        {n.node.statement}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </>
+        )}
+      </Section>
 
       <Section title="Related knowledge">
         {related.length === 0 ? (

@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   EmptyState,
   EvidenceTypeBadge,
+  ImpactBadge,
   NodeStatusBadge,
   NodeTypeBadge,
   PageHeader,
@@ -18,6 +19,8 @@ import { NODE_STATUSES, type KnowledgeNode, type NodeStatus, type NodeType } fro
 import type { KnowledgeService } from "@/lib/knowledge/service";
 import { getKnowledgeService } from "@/lib/workflows/runtime";
 import { BackfillButton } from "./backfill-button";
+import { DrillDownButton } from "./drill-down-button";
+import { RecomputeImpactButton } from "./recompute-impact-button";
 
 const NODE_TABS: Record<string, NodeType> = {
   claims: "claim",
@@ -61,6 +64,7 @@ export default async function KnowledgePage(props: PageProps<"/knowledge">) {
   const minConfidenceRaw = first(sp.minConfidence);
   const minConfidenceParsed = minConfidenceRaw ? Number(minConfidenceRaw) : undefined;
   const minConfidence = minConfidenceParsed !== undefined && Number.isFinite(minConfidenceParsed) ? minConfidenceParsed : undefined;
+  const sort = first(sp.sort) === "impact" ? "impact" : "recent";
   const pageRaw = Number(first(sp.page) ?? "1");
   const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.floor(pageRaw) : 1;
 
@@ -68,7 +72,15 @@ export default async function KnowledgePage(props: PageProps<"/knowledge">) {
 
   return (
     <div>
-      <PageHeader title="Knowledge" actions={<BackfillButton />} />
+      <PageHeader
+        title="Knowledge"
+        actions={
+          <>
+            <RecomputeImpactButton />
+            <BackfillButton />
+          </>
+        }
+      />
 
       <nav className="mb-4 flex flex-wrap gap-1 border-b pb-2">
         {TAB_ORDER.map((t) => (
@@ -128,6 +140,21 @@ export default async function KnowledgePage(props: PageProps<"/knowledge">) {
             className="h-8 w-24 rounded-lg border border-input bg-transparent px-2.5 text-sm"
           />
         </div>
+        <div>
+          <label htmlFor="sort" className="mb-1 block text-xs font-medium text-muted-foreground">
+            Sort
+          </label>
+          <select
+            id="sort"
+            name="sort"
+            defaultValue={sort}
+            className="h-8 rounded-lg border border-input bg-transparent px-2.5 text-sm"
+          >
+            <option value="recent">Most recent</option>
+            <option value="impact">Highest impact</option>
+          </select>
+        </div>
+        <input type="hidden" name="tab" value={tab} />
         <button type="submit" className={buttonVariants({ variant: "secondary" })}>
           Apply
         </button>
@@ -140,7 +167,7 @@ export default async function KnowledgePage(props: PageProps<"/knowledge">) {
       ) : tab === "sources" ? (
         <SourcesTab k={k} page={page} />
       ) : (
-        <NodeTab k={k} type={NODE_TABS[tab]} status={status} minConfidence={minConfidence} page={page} />
+        <NodeTab k={k} type={NODE_TABS[tab]} status={status} minConfidence={minConfidence} sort={sort} page={page} />
       )}
     </div>
   );
@@ -185,12 +212,14 @@ async function NodeTab({
   type,
   status,
   minConfidence,
+  sort,
   page,
 }: {
   k: KnowledgeService;
   type: NodeType;
   status?: NodeStatus;
   minConfidence?: number;
+  sort: "recent" | "impact";
   page: number;
 }) {
   const offset = (page - 1) * PAGE_SIZE;
@@ -198,6 +227,7 @@ async function NodeTab({
     types: [type],
     statuses: status ? [status] : undefined,
     minConfidence,
+    orderBy: sort,
     limit: PAGE_SIZE + 1,
     offset,
   });
@@ -216,8 +246,10 @@ async function NodeTab({
               <TableHead>Statement</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Confidence</TableHead>
+              <TableHead>Impact</TableHead>
               <TableHead>Origin / type</TableHead>
               <TableHead>Updated</TableHead>
+              <TableHead />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -233,16 +265,31 @@ async function NodeTab({
                 </TableCell>
                 <TableCell>{formatConfidence(n.confidence)}</TableCell>
                 <TableCell>
+                  <ImpactBadge impact={n.impact} title={n.impactExplanation?.reasons.join("\n")} />
+                </TableCell>
+                <TableCell>
                   <NodeTypeBadge type={n.type} origin={n.origin} />
                 </TableCell>
                 <TableCell>{formatDate(n.updatedAt, false)}</TableCell>
+                <TableCell>
+                  <DrillDownButton
+                    nodeId={n.id}
+                    requested={n.drillDownRequestedAt !== null && n.drillDownConsumedAt === null}
+                    note={n.drillDownNote}
+                  />
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       )}
       <Pagination
-        base={{ tab, status, minConfidence: minConfidence !== undefined ? String(minConfidence) : undefined }}
+        base={{
+          tab,
+          status,
+          minConfidence: minConfidence !== undefined ? String(minConfidence) : undefined,
+          sort: sort === "impact" ? "impact" : undefined,
+        }}
         page={page}
         hasMore={hasMore}
       />

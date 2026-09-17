@@ -2,6 +2,8 @@ import { z } from "zod";
 import { renderKnowledgeContext } from "@/lib/knowledge/retrieval";
 import type { SearchResult } from "@/lib/research/types";
 import { listTasks } from "@/lib/repo/tasks";
+import type { KnowledgeNode } from "@/lib/types";
+import { openlabsSchema, type Settings } from "@/lib/settings/schema";
 import {
   applyKnowledgeUpdates,
   decideKnowledgeUpdates,
@@ -53,6 +55,9 @@ export interface ResearchState extends BaseState {
   stored?: StoreResult;
   synthesis?: Synthesis;
   postId?: string | null;
+  /** Findings the operator queued for drill-down that this run picked up. */
+  drillDownNodeIds?: string[];
+  impactRecomputed?: number;
 }
 
 function depthFactor(ctx: RunContext): number {
@@ -80,11 +85,12 @@ const planSchema = z.object({
 
 async function plan(state: ResearchState, ctx: RunContext): Promise<Partial<ResearchState>> {
   const k = ctx.deps.knowledge;
-  const [openQuestions, contested, stats, recent] = await Promise.all([
+  const [openQuestions, contested, stats, recent, drillDown] = await Promise.all([
     k.listNodes({ types: ["question"], statuses: ["open"], limit: 15 }),
     k.listNodes({ types: ["claim"], statuses: ["contested", "weak", "unresolved"], limit: 10 }),
     k.stats(),
     listTasks({ types: ["research"], limit: 8 }),
+    k.listDrillDownQueue(ctx.settings.limits.maxDrillDownTargets),
   ]);
   const context = await ctx.trace(
     "search_knowledge",
@@ -104,7 +110,7 @@ async function plan(state: ResearchState, ctx: RunContext): Promise<Partial<Rese
           content: `Plan the next bounded research iteration.
 
 OBJECTIVE: ${state.objective}
-
+${renderDrillDownRequests(drillDown)}
 Knowledge base: ${stats.nodesByType.claim} claims, ${stats.nodesByType.question} questions, ${stats.sources} sources, ${stats.evidence} evidence items.
 
 OPEN QUESTIONS:
@@ -119,14 +125,39 @@ ${recent.filter((t) => t.id !== ctx.task?.id).map((t) => `- ${t.objective}`).joi
 RELATED STORED KNOWLEDGE:
 ${renderKnowledgeContext(context, { maxChars: 5000 })}
 
-Produce 1-4 sub-questions and at most ${ctx.settings.limits.maxQueriesPerRun} search queries. Prefer queries likely to surface primary research, independent replications, and safety (tumorigenesis/teratoma) data.`,
+Produce 1-4 sub-questions and at most ${ctx.settings.limits.maxQueriesPerRun} search queries. Prefer queries likely to surface primary research, independent replications, and safety (tumorigenesis/teratoma) data.${
+            drillDown.length > 0
+              ? "\n\nAt least one sub-question and one search query MUST target the first operator drill-down request above."
+              : ""
+          }`,
         },
       ],
       maxTokens: 2000,
     },
     { name: "research_plan", schema: planSchema },
   );
-  return { plan: { ...data, queries: data.queries.slice(0, ctx.settings.limits.maxQueriesPerRun) } };
+  return {
+    plan: { ...data, queries: data.queries.slice(0, ctx.settings.limits.maxQueriesPerRun) },
+    drillDownNodeIds: drillDown.map((n) => n.id),
+  };
+}
+
+/**
+ * The operator's explicit steering, rendered above everything else the planner
+ * sees. This is the only path by which the impact score changes what the agent
+ * does — the score itself never silently reorders the agent's own priorities.
+ */
+function renderDrillDownRequests(nodes: KnowledgeNode[]): string {
+  if (nodes.length === 0) return "";
+  const lines = nodes.map((n) => {
+    const impact = n.impact != null ? `, impact ${n.impact.toFixed(2)}` : "";
+    const note = n.drillDownNote ? `\n  operator note: ${n.drillDownNote}` : "";
+    return `- [${n.type}, ${n.status}${impact}] ${n.statement}${note}`;
+  });
+  return `
+OPERATOR DRILL-DOWN REQUESTS (highest priority — the operator has explicitly asked that these be pushed forward this cycle):
+${lines.join("\n")}
+`;
 }
 
 async function search(state: ResearchState, ctx: RunContext): Promise<Partial<ResearchState>> {
@@ -309,11 +340,25 @@ async function store(state: ResearchState, ctx: RunContext): Promise<Partial<Res
     (state.sourceQuestions ?? []).map((q) => ({ statement: q.statement, raisedBy: (nodesBySource.get(q.sourceId) ?? []).slice(0, 3) })),
     result,
   );
+  // Only now that knowledge has actually been written do we count the
+  // operator's drill-down requests as acted on. Clearing them in `plan` would
+  // silently lose the request if the run failed later; a failed run leaves them
+  // queued for the next cycle instead.
+  if (state.drillDownNodeIds?.length) {
+    await ctx.trace(
+      "consume_drill_down",
+      { nodeIds: state.drillDownNodeIds },
+      () => ctx.deps.knowledge.markDrillDownConsumed(state.drillDownNodeIds!),
+      undefined,
+      { bookkeeping: true },
+    );
+  }
+
   return { stored: result };
 }
 
 const synthesisSchema = z.object({
-  summary: z.string().describe("What this iteration changed in our understanding (for the run log)."),
+  summary: z.string().describe("What this iteration changed in our understanding (for the run log). One paragraph."),
   insights: z
     .array(
       z.object({
@@ -327,19 +372,31 @@ const synthesisSchema = z.object({
     .array(z.object({ statement: z.string(), raisedBy: z.array(z.string()) }))
     .max(3),
   postWorthy: z.boolean().describe("True only if there is a genuinely informative update for readers."),
-  postTopic: z.string(),
-  postAngle: z.string(),
-  postRationale: z.string(),
-  postType: z
-    .enum(["discussion", "claim"])
+  // The post fields only matter when postWorthy is true, so they are optional: a
+  // synthesis that declines to post (or is cut short) must not lose its insights.
+  postTopic: z.string().optional().describe("If postWorthy: the topic of the public research update."),
+  postAngle: z.string().optional().describe("If postWorthy: the angle the post should take."),
+  postRationale: z.string().optional().describe("If postWorthy: why this warrants a public update now."),
+  postType: openlabsSchema.shape.defaultPostType
+    .optional()
     .describe(
-      "Which post type to suggest. Choose \"claim\" ONLY when the update is a specific, testable proposition you can state a falsification test for. " +
+      "If postWorthy: which post type to suggest. Choose \"claim\" ONLY when the update is a specific, testable proposition you can state a falsification test for. " +
         "Choose \"discussion\" otherwise (open questions, synthesis, framing). Bias toward \"discussion\": our epistemic guardrails already prefer " +
         "hedged, evidence-proportional language, and a claim automatically opens a public peer review.",
     ),
-  focusNodeIds: z.array(z.string()).max(6),
+  focusNodeIds: z.array(z.string()).max(6).optional().describe("If postWorthy: up to 6 node ids the post should centre on."),
 });
-type Synthesis = z.infer<typeof synthesisSchema>;
+
+/**
+ * Persisted synthesis. Post fields are normalised in `synthesize`: whenever
+ * `postWorthy` is true there is a topic (falling back to the run objective), a
+ * post type (falling back to the operator's OpenLabs default) and focus nodes
+ * (falling back to what this run touched).
+ */
+interface Synthesis extends Omit<z.infer<typeof synthesisSchema>, "postType" | "focusNodeIds"> {
+  postType: Settings["openlabs"]["defaultPostType"];
+  focusNodeIds: string[];
+}
 
 async function synthesize(state: ResearchState, ctx: RunContext): Promise<Partial<ResearchState>> {
   const stored = state.stored ?? emptyStoreResult();
@@ -381,10 +438,10 @@ ${renderKnowledgeContext(context, { maxChars: 8000 })}
 Tasks:
 1. Propose at most 3 insights: interpretations that connect stored nodes (e.g. tension between efficacy and safety findings, gaps in replication, model-organism limits). Each must cite derivedFrom node ids from the lists above. Do not restate a single claim as an insight.
 2. Propose at most 3 new open questions, with raisedBy node ids.
-3. Decide whether this warrants a public research update (postWorthy). If yes, give topic, angle, rationale, postType, and up to 6 focusNodeIds.`,
+3. Decide whether this warrants a public research update (postWorthy). If yes, also give postTopic, postAngle, postRationale, postType and up to 6 focusNodeIds; if no, omit them.`,
         },
       ],
-      maxTokens: 3000,
+      maxTokens: 6000,
     },
     { name: "research_synthesis", schema: synthesisSchema },
   );
@@ -407,20 +464,58 @@ Tasks:
     data.questions.map((q) => ({ statement: q.statement, raisedBy: valid(q.raisedBy) })),
     stored,
   );
-  return { synthesis: { ...data, focusNodeIds: valid(data.focusNodeIds) }, stored };
+
+  // Post fields are only meaningful when postWorthy; fill in transparent defaults
+  // rather than failing the step. The draft still goes to the approval queue.
+  const synthesis: Synthesis = {
+    ...data,
+    postType: data.postType ?? ctx.settings.openlabs.defaultPostType,
+    focusNodeIds: valid(data.focusNodeIds ?? []),
+  };
+  if (synthesis.postWorthy) {
+    synthesis.postTopic = data.postTopic?.trim() || state.objective;
+    if (synthesis.focusNodeIds.length === 0) synthesis.focusNodeIds = touched.slice(0, 6).map((n) => n.id);
+  }
+  return { synthesis, stored };
 }
 
 async function draft(state: ResearchState, ctx: RunContext): Promise<Partial<ResearchState>> {
   const s = state.synthesis;
-  if (!s?.postWorthy) return { postId: null };
+  if (!s?.postWorthy || !s.postTopic) return { postId: null };
   const post = await draftPost(ctx, {
     topic: s.postTopic,
     angle: s.postAngle,
-    rationale: `Research objective: ${state.objective}\n${s.postRationale}`,
+    rationale: [`Research objective: ${state.objective}`, s.postRationale].filter(Boolean).join("\n"),
     focusNodeIds: s.focusNodeIds,
     postType: s.postType,
   });
   return { postId: post.id };
+}
+
+/**
+ * Rescores impact for everything this run touched, plus their 1-hop
+ * neighbours — the correct staleness boundary, since a node's status change
+ * alters the reach of whatever points at it but not of nodes two hops away.
+ *
+ * Runs after `synthesize` rather than after `draft` so a drafting failure
+ * cannot leave the scores stale, and `synthesize` may halt the run when
+ * nothing was stored (in which case there is nothing to rescore anyway).
+ */
+async function assessImpact(state: ResearchState, ctx: RunContext): Promise<Partial<ResearchState>> {
+  const stored = state.stored;
+  const ids = [
+    ...new Set([...(stored?.createdNodeIds ?? []), ...(stored?.touchedClaimIds ?? []), ...(stored?.questionIds ?? [])]),
+  ];
+  if (ids.length === 0) return { impactRecomputed: 0 };
+
+  const impactRecomputed = await ctx.trace(
+    "recompute_impact",
+    { nodeIds: ids.length },
+    () => ctx.deps.knowledge.recomputeImpact(ids, { includeNeighbours: true }),
+    (count) => ({ count }),
+    { bookkeeping: true },
+  );
+  return { impactRecomputed };
 }
 
 // ---------------------------------------------------------------------------
@@ -458,6 +553,11 @@ export const researchWorkflow: WorkflowDefinition<ResearchState> = {
       run: synthesize,
       summarize: (s) => (s.synthesis ? `${s.synthesis.summary} (postWorthy=${s.synthesis.postWorthy})` : (s.halted ?? "")),
     },
+    {
+      name: "assess_impact",
+      run: assessImpact,
+      summarize: (s) => `impact rescored for ${s.impactRecomputed ?? 0} findings`,
+    },
     { name: "draft", run: draft, summarize: (s) => (s.postId ? `draft post ${s.postId}` : "no post drafted") },
   ],
   finalStatus: (s) => (s.postId ? "awaiting_approval" : "completed"),
@@ -469,6 +569,8 @@ export const researchWorkflow: WorkflowDefinition<ResearchState> = {
     evidenceIds: s.stored?.evidenceIds ?? [],
     questionIds: s.stored?.questionIds ?? [],
     rejectedFindings: s.stored?.rejected ?? [],
+    drillDownNodeIds: s.drillDownNodeIds ?? [],
+    impactRecomputed: s.impactRecomputed ?? 0,
     postId: s.postId ?? null,
   }),
 };

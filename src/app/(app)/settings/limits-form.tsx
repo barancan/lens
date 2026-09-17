@@ -17,6 +17,7 @@ const FIELDS: { key: keyof Settings["limits"]; label: string; min: number; max: 
   { key: "maxToolCalls", label: "Max tool calls", min: 1, max: 200 },
   { key: "maxFollowUpResearch", label: "Max follow-up research", min: 0, max: 5 },
   { key: "maxChatToolRounds", label: "Max chat tool rounds", min: 1, max: 20 },
+  { key: "maxDrillDownTargets", label: "Max drill-down targets per run", min: 1, max: 10 },
   { key: "maxSourceChars", label: "Max source characters", min: 2000, max: 200000 },
 ];
 

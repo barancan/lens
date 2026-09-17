@@ -10,11 +10,16 @@ import { ModelsForm } from "./models-form";
 import { OpenLabsForm } from "./openlabs-form";
 import { ProjectForm } from "./project-form";
 import { ResearchAgentForm } from "./research-agent-form";
+import { CurrentSchedule, ScheduleForm } from "./schedule-form";
+import vercelConfig from "../../../../vercel.json";
 
 export default async function SettingsPage() {
   const settings = await getAllSettings();
   const sources = listResearchSources();
   const openLabsConfigured = isOpenLabsConfigured();
+  // Read straight from the committed config, so the panel shows what is
+  // actually deployed rather than what the setting wishes were deployed.
+  const deployedCrons = vercelConfig.crons ?? [];
 
   return (
     <div>
@@ -75,6 +80,19 @@ export default async function SettingsPage() {
           </CardHeader>
           <CardContent>
             <LimitsForm key={JSON.stringify(settings.limits)} initial={settings.limits} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Schedule</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <ScheduleForm key={JSON.stringify(settings.schedule)} initial={settings.schedule} />
+            <div className="rounded-md border border-dashed px-3 py-2">
+              <p className="mb-1 text-xs font-medium text-muted-foreground">Currently deployed</p>
+              <CurrentSchedule timeZone={settings.schedule.timezone} crons={deployedCrons} />
+            </div>
           </CardContent>
         </Card>
 

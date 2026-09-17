@@ -23,6 +23,7 @@ import {
 } from "@/lib/types";
 import { chunkText } from "./chunking";
 import { computeConfidence } from "./confidence";
+import { computeImpact, headroomOf, linkCoupling, type ImpactLink, type ImpactNeighbour, type ImpactResult } from "./impact";
 import {
   renderKnowledgeContext,
   searchKnowledge as searchKnowledgeImpl,
@@ -103,7 +104,10 @@ export interface ListNodesFilters {
   origins?: NodeOrigin[];
   tags?: string[];
   minConfidence?: number;
+  minImpact?: number;
   text?: string;
+  /** Default "recent". "impact" ranks by leverage, unscored nodes last. */
+  orderBy?: "recent" | "impact";
   limit?: number;
   offset?: number;
 }
@@ -123,6 +127,16 @@ export interface ClaimDetail {
   questions: KnowledgeNode[];
   sources: Source[];
   history: NodeHistoryEntry[];
+  /** Neighbours the stored impact score says would move, for the detail page. */
+  impactNeighbours: ImpactNeighbourDetail[];
+}
+
+/** A neighbour named in the impact breakdown, resolved for display. */
+export interface ImpactNeighbourDetail {
+  node: KnowledgeNode;
+  link: ImpactLink;
+  /** This neighbour's share of the coupled mass behind the score. */
+  gain: number;
 }
 
 export interface AddEvidenceInput {
@@ -218,6 +232,17 @@ export interface KnowledgeService {
   // Retrieval
   searchKnowledge(query: string, filters?: RetrievalFilters): Promise<KnowledgeContext>;
 
+  // Impact
+  recomputeImpact(ids: string[], opts?: { includeNeighbours?: boolean }): Promise<number>;
+  recomputeAllImpact(limit?: number): Promise<number>;
+
+  // Drill-down queue
+  requestDrillDown(id: string, note?: string | null): Promise<KnowledgeNode | null>;
+  reorderDrillDownQueue(ids: string[]): Promise<void>;
+  cancelDrillDown(id: string): Promise<KnowledgeNode | null>;
+  listDrillDownQueue(limit?: number): Promise<KnowledgeNode[]>;
+  markDrillDownConsumed(ids: string[]): Promise<void>;
+
   // Maintenance
   backfillEmbeddings(limit?: number): Promise<{ nodes: number; chunks: number }>;
   stats(): Promise<KnowledgeStats>;
@@ -229,6 +254,21 @@ export interface KnowledgeService {
 
 /** How much of a new source's text we bother chunking/embedding. Full text is stored untruncated for provenance. */
 const DEFAULT_CHUNKING_BUDGET_CHARS = 20_000;
+/**
+ * How many findings may sit in the drill-down queue at once. A hard cap keeps
+ * it a deliberate shortlist the operator can actually order by hand, rather
+ * than a backlog.
+ */
+export const MAX_DRILL_DOWN_QUEUE = 10;
+
+/** Thrown by `requestDrillDown` when the queue is already full. */
+export class DrillDownQueueFullError extends Error {
+  constructor() {
+    super(`The drill-down queue is full (${MAX_DRILL_DOWN_QUEUE}). Remove something before queueing another finding.`);
+    this.name = "DrillDownQueueFullError";
+  }
+}
+
 /** Embedding-similarity dedupe threshold for claims and questions. */
 const DEDUPE_SIMILARITY_THRESHOLD = 0.95;
 /** Tolerance for float32 round-tripping through the `real` column when checking whether confidence changed. */
@@ -522,8 +562,9 @@ export function createKnowledgeService(deps: KnowledgeServiceDeps): KnowledgeSer
 
     const sourceIds = Array.from(new Set(evidence.map((e) => e.sourceId)));
     const sources = await sourcesRepo.getSourcesByIds(sourceIds);
+    const impactNeighbours = await resolveImpactNeighbours(node);
 
-    return { node, supporting, contradicting, contextual, related, questions, sources, history };
+    return { node, supporting, contradicting, contextual, related, questions, sources, history, impactNeighbours };
   }
 
   // -------------------------------------------------------------------------
@@ -649,6 +690,206 @@ export function createKnowledgeService(deps: KnowledgeServiceDeps): KnowledgeSer
   }
 
   // -------------------------------------------------------------------------
+  // Impact
+  // -------------------------------------------------------------------------
+
+  /**
+   * How many nearest neighbours to consider per node, and how similar they must
+   * be to count at all. Kept in step with `match_neighbour_nodes`'s defaults.
+   */
+  const IMPACT_VECTOR_NEIGHBOURS = 8;
+  const IMPACT_MIN_SIMILARITY = 0.75;
+  /** Ceiling on one recompute pass, so a large run cannot fan out unboundedly. */
+  const IMPACT_MAX_NODES = 200;
+
+  /**
+   * Gathers every node's neighbours in a fixed number of queries (not one per
+   * node) and scores them. Impact depends on the neighbourhood, so unlike
+   * `recomputeConfidence` this is deliberately batch-shaped.
+   */
+  async function scoreNodes(ids: string[]): Promise<Map<string, ImpactResult>> {
+    const results = new Map<string, ImpactResult>();
+    if (ids.length === 0) return results;
+
+    const [edges, vectors] = await Promise.all([
+      edgesRepo.getNeighbourEdgesForNodes(ids),
+      knowledgeRepo.getVectorNeighboursForNodes(ids, IMPACT_VECTOR_NEIGHBOURS, IMPACT_MIN_SIMILARITY),
+    ]);
+
+    // One lookup covering the scored nodes and everything they touch.
+    const neighbourIds = new Set<string>();
+    for (const e of edges) neighbourIds.add(e.neighbour_id);
+    for (const v of vectors) neighbourIds.add(v.neighbour_id);
+    const inputs = await knowledgeRepo.getImpactInputsForNodes([...new Set([...ids, ...neighbourIds])]);
+    const byId = new Map(inputs.map((row) => [row.id, row]));
+
+    const linksByNode = new Map<string, { neighbourId: string; link: ImpactLink }[]>();
+    const push = (nodeId: string, neighbourId: string, link: ImpactLink) => {
+      const list = linksByNode.get(nodeId) ?? [];
+      list.push({ neighbourId, link });
+      linksByNode.set(nodeId, list);
+    };
+    for (const e of edges) {
+      push(e.node_id, e.neighbour_id, { kind: "edge", relationshipType: e.relationship_type, direction: e.direction });
+    }
+    for (const v of vectors) {
+      push(v.node_id, v.neighbour_id, { kind: "similar", similarity: v.similarity });
+    }
+
+    for (const id of ids) {
+      const self = byId.get(id);
+      if (!self) continue;
+      const neighbours: ImpactNeighbour[] = [];
+      for (const { neighbourId, link } of linksByNode.get(id) ?? []) {
+        const row = byId.get(neighbourId);
+        if (!row) continue;
+        neighbours.push({
+          nodeId: row.id,
+          statement: row.statement,
+          type: row.type,
+          status: row.status,
+          confidence: row.confidence,
+          distinctSourceCount: row.distinct_source_count,
+          link,
+        });
+      }
+      results.set(
+        id,
+        computeImpact(
+          {
+            status: self.status,
+            confidence: self.confidence,
+            distinctSourceCount: self.distinct_source_count,
+            hasEmbedding: self.has_embedding,
+          },
+          neighbours,
+        ),
+      );
+    }
+    return results;
+  }
+
+  /**
+   * Resolves the neighbours behind a node's stored impact score, so the detail
+   * page can name which findings would move rather than just showing a number.
+   * Recomputes the links live (cheap: two queries) so the list matches the
+   * current graph even when the stored score is a little stale.
+   */
+  async function resolveImpactNeighbours(node: KnowledgeNode): Promise<ImpactNeighbourDetail[]> {
+    const scored = await scoreNodes([node.id]);
+    const result = scored.get(node.id);
+    if (!result || result.components.edgeNeighbours + result.components.similarNeighbours === 0) return [];
+
+    const [edges, vectors] = await Promise.all([
+      edgesRepo.getNeighbourEdgesForNodes([node.id]),
+      knowledgeRepo.getVectorNeighboursForNodes([node.id], IMPACT_VECTOR_NEIGHBOURS, IMPACT_MIN_SIMILARITY),
+    ]);
+    const links = new Map<string, ImpactLink>();
+    // Edges last so an explicit relationship wins over a latent one, matching
+    // how computeImpact picks the strongest link per neighbour.
+    for (const v of vectors) links.set(v.neighbour_id, { kind: "similar", similarity: v.similarity });
+    for (const e of edges) {
+      links.set(e.neighbour_id, { kind: "edge", relationshipType: e.relationship_type, direction: e.direction });
+    }
+    if (links.size === 0) return [];
+
+    const nodes = await knowledgeRepo.getNodesByIds([...links.keys()]);
+    const inputs = await knowledgeRepo.getImpactInputsForNodes([...links.keys()]);
+    const stats = new Map(inputs.map((row) => [row.id, row]));
+
+    return nodes
+      .map((neighbour) => {
+        const link = links.get(neighbour.id)!;
+        const row = stats.get(neighbour.id);
+        const gain = row
+          ? linkCoupling(link) *
+            headroomOf({ status: row.status, confidence: row.confidence, distinctSourceCount: row.distinct_source_count })
+          : 0;
+        return { node: neighbour, link, gain: Math.round(gain * 1000) / 1000 };
+      })
+      .filter((n) => n.gain > 0)
+      .sort((a, b) => b.gain - a.gain);
+  }
+
+  /**
+   * Recomputes impact for `ids`, optionally for their 1-hop neighbours too.
+   *
+   * The 1-hop closure is the correct staleness boundary: changing a node's
+   * status changes the reach of everything pointing at it, but not of nodes two
+   * hops away, whose contribution is mediated by a neighbour that did not move.
+   */
+  async function recomputeImpact(ids: string[], opts: { includeNeighbours?: boolean } = {}): Promise<number> {
+    const unique = [...new Set(ids)];
+    if (unique.length === 0) return 0;
+
+    let targets = unique;
+    if (opts.includeNeighbours) {
+      const [edges, vectors] = await Promise.all([
+        edgesRepo.getNeighbourEdgesForNodes(unique),
+        knowledgeRepo.getVectorNeighboursForNodes(unique, IMPACT_VECTOR_NEIGHBOURS, IMPACT_MIN_SIMILARITY),
+      ]);
+      const frontier = new Set(unique);
+      for (const e of edges) frontier.add(e.neighbour_id);
+      for (const v of vectors) frontier.add(v.neighbour_id);
+      targets = [...frontier];
+    }
+    targets = targets.slice(0, IMPACT_MAX_NODES);
+
+    const scored = await scoreNodes(targets);
+    return knowledgeRepo.updateNodeImpactBatch(
+      [...scored.entries()].map(([id, result]) => ({
+        id,
+        impact: result.impact,
+        explanation: { components: result.components, reasons: result.reasons },
+      })),
+    );
+  }
+
+  /** Full refresh, stalest first, for the maintenance button. */
+  async function recomputeAllImpact(limit = 500): Promise<number> {
+    const ids = await knowledgeRepo.getNodeIdsForImpactRefresh(limit);
+    const scored = await scoreNodes(ids);
+    return knowledgeRepo.updateNodeImpactBatch(
+      [...scored.entries()].map(([id, result]) => ({
+        id,
+        impact: result.impact,
+        explanation: { components: result.components, reasons: result.reasons },
+      })),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Drill-down queue
+  // -------------------------------------------------------------------------
+
+  async function requestDrillDown(id: string, note?: string | null): Promise<KnowledgeNode | null> {
+    // Re-queueing something already pending is a note edit, not a new entry, so
+    // it must not count against the cap.
+    const existing = await knowledgeRepo.getNodeById(id);
+    const alreadyPending = existing?.drillDownRequestedAt !== null && existing?.drillDownConsumedAt === null;
+    if (!alreadyPending && (await knowledgeRepo.countPendingDrillDown()) >= MAX_DRILL_DOWN_QUEUE) {
+      throw new DrillDownQueueFullError();
+    }
+    return knowledgeRepo.setDrillDownRequest(id, note?.trim() || null);
+  }
+
+  async function reorderDrillDownQueue(ids: string[]): Promise<void> {
+    return knowledgeRepo.reorderDrillDownQueue(ids);
+  }
+
+  async function cancelDrillDown(id: string): Promise<KnowledgeNode | null> {
+    return knowledgeRepo.clearDrillDownRequest(id);
+  }
+
+  async function listDrillDownQueue(limit = 5): Promise<KnowledgeNode[]> {
+    return knowledgeRepo.listDrillDownQueue(limit);
+  }
+
+  async function markDrillDownConsumed(ids: string[]): Promise<void> {
+    return knowledgeRepo.markDrillDownConsumed(ids);
+  }
+
+  // -------------------------------------------------------------------------
   // Retrieval
   // -------------------------------------------------------------------------
 
@@ -711,6 +952,13 @@ export function createKnowledgeService(deps: KnowledgeServiceDeps): KnowledgeSer
     findRelatedKnowledge,
     updateConfidence,
     recomputeConfidence,
+    recomputeImpact,
+    recomputeAllImpact,
+    requestDrillDown,
+    reorderDrillDownQueue,
+    cancelDrillDown,
+    listDrillDownQueue,
+    markDrillDownConsumed,
     searchKnowledge,
     backfillEmbeddings,
     stats,

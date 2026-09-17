@@ -43,11 +43,39 @@ export function formatDate(iso: string | null | undefined, withTime = true): str
     : d.toLocaleDateString("en-GB", { year: "numeric", month: "short", day: "2-digit", timeZone: "UTC" });
 }
 
+type Tone = "neutral" | "good" | "bad" | "warn" | "info" | "agent";
+
 export function formatConfidence(c: number | null | undefined): string {
   return c === null || c === undefined ? "n/a" : c.toFixed(2);
 }
 
-type Tone = "neutral" | "good" | "bad" | "warn" | "info" | "agent";
+export function formatImpact(i: number | null | undefined): string {
+  return i === null || i === undefined ? "—" : i.toFixed(2);
+}
+
+/**
+ * Bands for the impact score. Impact saturates — `reach = mass / (mass + 1.5)`
+ * — so it approaches but never reaches 1, and on a sparsely linked knowledge
+ * base the top of the range sits nearer 0.35 than 1.0. These thresholds are
+ * therefore set to separate what is actually there, not to span 0..1.
+ */
+export function impactTone(i: number | null | undefined): Tone {
+  if (i === null || i === undefined) return "neutral";
+  if (i >= 0.3) return "good";
+  if (i >= 0.15) return "warn";
+  return "neutral";
+}
+
+export function ImpactBadge({ impact, title }: { impact: number | null | undefined; title?: string }) {
+  return (
+    <Tag
+      tone={impactTone(impact)}
+      title={title ?? "How much drilling into this finding would move other findings"}
+    >
+      impact {formatImpact(impact)}
+    </Tag>
+  );
+}
 
 const TONE: Record<Tone, string> = {
   neutral: "bg-muted text-muted-foreground",

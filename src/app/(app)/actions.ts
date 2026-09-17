@@ -20,6 +20,7 @@ import { updateReply } from "@/lib/repo/replies";
 import { SETTINGS_KEYS, type SettingsKey } from "@/lib/settings/schema";
 import { removeFocusDirective, SettingsValidationError, updateSettings } from "@/lib/settings/service";
 import { runChatTurn } from "@/lib/workflows/chat";
+import { MAX_DRILL_DOWN_QUEUE } from "@/lib/knowledge/service";
 import { getAgentDeps, getKnowledgeService, launchInBackground } from "@/lib/workflows/runtime";
 import { ingestComment, startRegeneration, startResearch } from "@/lib/workflows/tasks";
 
@@ -315,6 +316,63 @@ export async function backfillEmbeddingsAction(): Promise<ActionResult<{ updated
     const updated = typeof result === "number" ? result : Object.values(result as Record<string, number>).reduce((a, b) => a + b, 0);
     revalidatePath("/knowledge");
     return { ok: true, data: { updated } };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Impact & the drill-down queue
+// ---------------------------------------------------------------------------
+
+export async function recomputeImpactAction(): Promise<ActionResult<{ updated: number }>> {
+  await requireSession();
+  try {
+    const updated = await getKnowledgeService().recomputeAllImpact(500);
+    revalidatePath("/knowledge");
+    revalidatePath("/dashboard");
+    return { ok: true, data: { updated } };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+/**
+ * Queues a finding for the next research cycle, or takes it back off the queue.
+ * This is the only way the impact score changes what the agent does — the agent
+ * never reprioritises itself from the score.
+ */
+export async function setDrillDownAction(
+  nodeId: string,
+  input: { requested: boolean; note?: string },
+): Promise<ActionResult> {
+  await requireSession();
+  try {
+    const id = uuid.parse(nodeId);
+    const k = getKnowledgeService();
+    if (input.requested) {
+      await k.requestDrillDown(id, z.string().max(500).optional().parse(input.note));
+    } else {
+      await k.cancelDrillDown(id);
+    }
+    revalidatePath("/knowledge");
+    revalidatePath(`/knowledge/nodes/${id}`);
+    revalidatePath("/dashboard");
+    return { ok: true };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+/** Persists the operator's drag-and-drop ordering of the drill-down queue. */
+export async function reorderDrillDownQueueAction(nodeIds: string[]): Promise<ActionResult> {
+  await requireSession();
+  try {
+    const ids = z.array(uuid).max(MAX_DRILL_DOWN_QUEUE).parse(nodeIds);
+    await getKnowledgeService().reorderDrillDownQueue(ids);
+    revalidatePath("/dashboard");
+    revalidatePath("/knowledge");
+    return { ok: true };
   } catch (err) {
     return failure(err);
   }

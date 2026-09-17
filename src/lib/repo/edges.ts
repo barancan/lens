@@ -1,5 +1,6 @@
 import { db } from "@/lib/db/client";
-import type { KnowledgeEdge, KnowledgeNode, NodeOrigin, NodeStatus, NodeType, RelationshipType } from "@/lib/types";
+import type { KnowledgeEdge, KnowledgeNode, RelationshipType } from "@/lib/types";
+import { mapNode, NODE_COLUMN_NAMES, type NodeRow } from "./knowledge";
 
 /**
  * Plain SQL access to `knowledge_edges`. No business rules beyond the SQL
@@ -17,20 +18,6 @@ interface EdgeRow {
   created_at: Date;
 }
 
-interface NodeRow {
-  id: string;
-  type: NodeType;
-  statement: string;
-  summary: string | null;
-  confidence: number | null;
-  status: NodeStatus;
-  origin: NodeOrigin;
-  tags: string[];
-  metadata: Record<string, unknown>;
-  created_at: Date;
-  updated_at: Date;
-}
-
 function mapEdge(row: EdgeRow): KnowledgeEdge {
   return {
     id: row.id,
@@ -44,21 +31,6 @@ function mapEdge(row: EdgeRow): KnowledgeEdge {
   };
 }
 
-function mapNode(row: NodeRow): KnowledgeNode {
-  return {
-    id: row.id,
-    type: row.type,
-    statement: row.statement,
-    summary: row.summary,
-    confidence: row.confidence,
-    status: row.status,
-    origin: row.origin,
-    tags: row.tags,
-    metadata: row.metadata,
-    createdAt: row.created_at.toISOString(),
-    updatedAt: row.updated_at.toISOString(),
-  };
-}
 
 export interface UpsertEdgeInput {
   fromNodeId: string;
@@ -90,45 +62,25 @@ export interface EdgeWithNode {
   node: KnowledgeNode;
 }
 
-interface EdgeNodeRow extends EdgeRow {
-  n_id: string;
-  n_type: NodeType;
-  n_statement: string;
-  n_summary: string | null;
-  n_confidence: number | null;
-  n_status: NodeStatus;
-  n_origin: NodeOrigin;
-  n_tags: string[];
-  n_metadata: Record<string, unknown>;
-  n_created_at: Date;
-  n_updated_at: Date;
-}
+/** The joined node's columns, prefixed to avoid colliding with the edge's own. */
+type EdgeNodeRow = EdgeRow & Record<`n_${string}`, unknown>;
 
 function mapEdgeNodeRow(row: EdgeNodeRow): EdgeWithNode {
-  return {
-    edge: mapEdge(row),
-    node: mapNode({
-      id: row.n_id,
-      type: row.n_type,
-      statement: row.n_statement,
-      summary: row.n_summary,
-      confidence: row.n_confidence,
-      status: row.n_status,
-      origin: row.n_origin,
-      tags: row.n_tags,
-      metadata: row.n_metadata,
-      created_at: row.n_created_at,
-      updated_at: row.n_updated_at,
-    }),
-  };
+  const node = Object.fromEntries(
+    NODE_COLUMN_NAMES.map((column) => [column, row[`n_${column}`]]),
+  ) as unknown as NodeRow;
+  return { edge: mapEdge(row), node: mapNode(node) };
 }
 
-const EDGE_NODE_SELECT = `
-  e.id, e.from_node_id, e.to_node_id, e.relationship_type, e.confidence, e.source_id, e.metadata, e.created_at,
-  n.id as n_id, n.type as n_type, n.statement as n_statement, n.summary as n_summary, n.confidence as n_confidence,
-  n.status as n_status, n.origin as n_origin, n.tags as n_tags, n.metadata as n_metadata,
-  n.created_at as n_created_at, n.updated_at as n_updated_at
-`;
+/**
+ * Built from NODE_COLUMN_NAMES rather than spelled out, so a new node column
+ * reaches this join automatically. Written by hand it would silently return
+ * `undefined` for anything forgotten.
+ */
+const EDGE_NODE_SELECT = [
+  "e.id, e.from_node_id, e.to_node_id, e.relationship_type, e.confidence, e.source_id, e.metadata, e.created_at",
+  ...NODE_COLUMN_NAMES.map((column) => `n.${column} as n_${column}`),
+].join(", ");
 
 /** Edges where `nodeId` is the source; `node` is the other end (the "to" node). */
 export async function getOutgoingEdges(nodeId: string): Promise<EdgeWithNode[]> {
@@ -160,4 +112,29 @@ export async function countEdges(): Promise<number> {
   const sql = db();
   const rows = await sql<{ count: string }[]>`select count(*)::text as count from knowledge_edges`;
   return Number(rows[0]?.count ?? 0);
+}
+
+/** A node's edge neighbours, from that node's point of view. */
+export interface NeighbourEdgeRow {
+  node_id: string;
+  neighbour_id: string;
+  relationship_type: RelationshipType;
+  direction: "incoming" | "outgoing";
+}
+
+/**
+ * Both directions for many nodes in a single query, for impact scoring.
+ * Index coverage is already there: the unique (from, to, type) constraint
+ * serves the first arm and `knowledge_edges_to_idx` the second.
+ */
+export async function getNeighbourEdgesForNodes(ids: string[]): Promise<NeighbourEdgeRow[]> {
+  if (ids.length === 0) return [];
+  const sql = db();
+  return sql<NeighbourEdgeRow[]>`
+    select from_node_id as node_id, to_node_id as neighbour_id, relationship_type, 'outgoing' as direction
+      from knowledge_edges where from_node_id = any(${ids}::uuid[])
+    union all
+    select to_node_id as node_id, from_node_id as neighbour_id, relationship_type, 'incoming' as direction
+      from knowledge_edges where to_node_id = any(${ids}::uuid[])
+  `;
 }

@@ -167,6 +167,13 @@ describe("renderKnowledgeContext", () => {
       metadata: {},
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      impact: null,
+      impactExplanation: null,
+      impactComputedAt: null,
+      drillDownRequestedAt: null,
+      drillDownNote: null,
+      drillDownConsumedAt: null,
+      drillDownPosition: null,
       ...overrides,
     };
   }

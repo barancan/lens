@@ -31,7 +31,7 @@ export async function generateStructured<T>(
   };
 
   const response = await provider.generate(initialRequest);
-  const firstAttempt = tryParse(output.schema, response.text);
+  const firstAttempt = tryParse(output.schema, response);
   if (firstAttempt.ok) {
     return { data: firstAttempt.data, response, attempts: 1 };
   }
@@ -48,7 +48,8 @@ export async function generateStructured<T>(
     ],
   };
   const repairResponse = await provider.generate(repairRequest);
-  const secondAttempt = tryParse(output.schema, repairResponse.text);
+  // Last attempt: a truncated repair that still validates is kept rather than discarded.
+  const secondAttempt = tryParse(output.schema, repairResponse, { acceptTruncated: true });
   if (secondAttempt.ok) {
     return {
       data: secondAttempt.data,
@@ -84,15 +85,30 @@ function extractJson(text: string): unknown {
 
 type ParseAttempt<T> = { ok: true; data: T } | { ok: false; issues: string };
 
-function tryParse<T>(schema: z.ZodType<T>, text: string): ParseAttempt<T> {
+const TRUNCATION_NOTE =
+  "The response was cut off by the output token limit before the JSON was complete, so trailing fields are missing. " +
+  "Keep prose fields brief so the whole object fits.";
+
+/**
+ * Parses and validates a response. A response cut off at `maxTokens` is
+ * rejected even when it validates: adapters return the parsed prefix of a
+ * truncated forced tool call as well-formed JSON, so trailing fields (or
+ * trailing array items) go missing silently. With `acceptTruncated`, such a
+ * response is kept if it validates — for the final attempt, where valid
+ * partial data beats none.
+ */
+function tryParse<T>(schema: z.ZodType<T>, response: LLMResponse, opts: { acceptTruncated?: boolean } = {}): ParseAttempt<T> {
+  const truncated = response.stopReason === "max_tokens";
+  const withNote = (issues: string) => (truncated ? `${TRUNCATION_NOTE}\n${issues}` : issues);
+
   let json: unknown;
   try {
-    json = extractJson(text);
+    json = extractJson(response.text);
   } catch (err) {
-    return { ok: false, issues: `Response was not valid JSON: ${err instanceof Error ? err.message : String(err)}` };
+    return { ok: false, issues: withNote(`Response was not valid JSON: ${err instanceof Error ? err.message : String(err)}`) };
   }
 
   const parsed = schema.safeParse(json);
-  if (parsed.success) return { ok: true, data: parsed.data };
-  return { ok: false, issues: z.prettifyError(parsed.error) };
+  if (parsed.success && (!truncated || opts.acceptTruncated)) return { ok: true, data: parsed.data };
+  return { ok: false, issues: withNote(parsed.success ? "(the JSON received so far is valid but incomplete)" : z.prettifyError(parsed.error)) };
 }

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { OPENLABS_TOPICS } from "@/lib/integrations/openlabs/taxonomy";
+import { isValidTimeZone } from "@/lib/schedule";
 
 /**
  * Runtime configuration stored in `agent_settings` (one row per key).
@@ -78,6 +79,8 @@ export const limitsSchema = z.object({
   maxToolCalls: z.number().int().min(1).max(200),
   maxFollowUpResearch: z.number().int().min(0).max(5),
   maxChatToolRounds: z.number().int().min(1).max(20),
+  /** How many operator drill-down requests one run may pick up. */
+  maxDrillDownTargets: z.number().int().min(1).max(10),
   maxSourceChars: z.number().int().min(2000).max(200000),
 });
 
@@ -96,6 +99,25 @@ export const openlabsSchema = z.object({
   maxIngestsPerPoll: z.number().int().min(1).max(20),
 });
 
+const localTimeSchema = z.object({
+  hour: z.number().int().min(0).max(23),
+  minute: z.number().int().min(0).max(59),
+});
+
+/**
+ * The times the operator *intends* the crons to run, in their own timezone.
+ *
+ * This is a record of intent, not a live schedule: Vercel reads cron
+ * expressions from `vercel.json` at deploy time and always interprets them as
+ * UTC. Settings → Schedule turns these into the expression to commit, and warns
+ * when daylight saving will pull it off the intended local time.
+ */
+export const scheduleSchema = z.object({
+  timezone: z.string().min(1).refine(isValidTimeZone, { message: "Unknown timezone" }),
+  research: localTimeSchema,
+  comments: localTimeSchema,
+});
+
 export const settingsSchemas = {
   project: projectSchema,
   research_agent: researchAgentSchema,
@@ -104,6 +126,7 @@ export const settingsSchemas = {
   models: modelsSchema,
   limits: limitsSchema,
   openlabs: openlabsSchema,
+  schedule: scheduleSchema,
 } as const;
 
 export type SettingsKey = keyof typeof settingsSchemas;
@@ -196,7 +219,15 @@ export const DEFAULT_SETTINGS: Settings = {
     maxToolCalls: 60,
     maxFollowUpResearch: 1,
     maxChatToolRounds: 6,
+    maxDrillDownTargets: 3,
     maxSourceChars: 40000,
+  },
+  schedule: {
+    // Defaults mirror `vercel.json` exactly, so the panel is truthful before
+    // the operator touches anything.
+    timezone: "UTC",
+    research: { hour: 6, minute: 0 },
+    comments: { hour: 7, minute: 0 },
   },
   openlabs: {
     defaultPostType: "discussion",

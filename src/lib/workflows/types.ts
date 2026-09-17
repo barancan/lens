@@ -32,8 +32,18 @@ export interface RunContext {
   /**
    * Execute and log an external/tool operation, counting it against the
    * run's tool-call budget. Errors are logged and re-thrown.
+   *
+   * `bookkeeping` marks local knowledge-store reads/writes whose count is
+   * already bounded by the source and finding limits; they are logged but do
+   * not consume the budget, which guards open-ended external work.
    */
-  trace<T>(tool: string, input: unknown, fn: () => Promise<T>, summarize?: (out: T) => unknown): Promise<T>;
+  trace<T>(
+    tool: string,
+    input: unknown,
+    fn: () => Promise<T>,
+    summarize?: (out: T) => unknown,
+    opts?: { bookkeeping?: boolean },
+  ): Promise<T>;
   toolCalls(): ToolCallLog[];
 }
 

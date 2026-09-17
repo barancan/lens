@@ -60,7 +60,7 @@ describe("EuropePmcSource", () => {
     expect(r.url).toBe("https://europepmc.org/article/MED/12345");
     expect(r.publicationDate).toBe("2023-04-01");
     expect(r.sourceType).toBe("paper");
-    expect(r.snippet).toBe("This is the abstract .");
+    expect(r.snippet).toBe("This is the abstract.");
     expect(r.metadata).toMatchObject({
       pmid: "12345",
       pmcid: "PMC999",

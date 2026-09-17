@@ -5,7 +5,7 @@
  *   pnpm db:seed           → apply to DATABASE_URL
  *   pnpm db:seed --sql     → print equivalent SQL (see supabase/seed.sql)
  */
-import "dotenv/config";
+import "./load-env";
 import postgres from "postgres";
 import { DEFAULT_SETTINGS, SEED_THEMES } from "../src/lib/settings/schema";
 

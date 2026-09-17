@@ -1,5 +1,5 @@
 /** Apply supabase/migrations/*.sql to DATABASE_URL. */
-import "dotenv/config";
+import "./load-env";
 import postgres from "postgres";
 import { runMigrations } from "../src/lib/db/migrate";
 

@@ -91,8 +91,9 @@ export function stripMarkup(xmlOrHtml: string): string {
   const blockClosePattern = new RegExp(`</?(?:${BLOCK_TAGS.join("|")})\\b[^>]*>`, "gi");
   text = text.replace(blockClosePattern, "\n\n");
 
-  // Strip all remaining tags.
-  text = text.replace(/<[^>]+>/g, " ");
+  // Cell/separator tags become spaces; other inline tags (b, i, sup, a, span…) vanish without adding space.
+  text = text.replace(/<\/?(?:td|th|dt|dd|img|hr|input|label|caption)\b[^>]*>/gi, " ");
+  text = text.replace(/<[^>]+>/g, "");
 
   // Decode entities.
   text = decodeEntities(text);

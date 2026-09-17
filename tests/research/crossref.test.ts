@@ -52,7 +52,7 @@ describe("CrossrefSource", () => {
     expect(r.authors).toEqual(["Jane Smith", "Bob Lee"]);
     expect(r.publicationDate).toBe("2021-06-15");
     expect(r.sourceType).toBe("paper");
-    expect(r.snippet).toBe("An abstract .");
+    expect(r.snippet).toBe("An abstract.");
     expect(r.metadata.containerTitle).toBe("Cell");
   });
 

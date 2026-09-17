@@ -3,6 +3,8 @@ import { NavLinks } from "@/components/nav-links";
 
 // Server actions on these pages may launch agent work via `after()`.
 export const maxDuration = 300;
+// Every page reads live, per-user data; never prerender at build time.
+export const dynamic = "force-dynamic";
 
 export default async function AppLayout({ children }: LayoutProps<"/">) {
   await requireSession();

@@ -4,6 +4,7 @@
  * re-validated at each hop, and the response is capped in size and type.
  */
 import { promises as dnsPromises } from "node:dns";
+import { BlockList, isIP } from "node:net";
 import type { ResearchSource, SearchQuery, SearchResult, SourceDocument } from "@/lib/research/types";
 import type { SourceType } from "@/lib/types";
 import { ResearchSourceError, fetchWithTimeout, stripMarkup, userAgent } from "./http";
@@ -36,51 +37,25 @@ export interface FetchUrlOptions {
 // SSRF guard
 // ---------------------------------------------------------------------------
 
-function isPrivateIPv4(address: string): boolean {
-  const parts = address.split(".").map((p) => Number(p));
-  if (parts.length !== 4 || parts.some((p) => Number.isNaN(p) || p < 0 || p > 255)) {
-    return true; // fail closed on anything we can't parse confidently
-  }
-  const [a, b] = parts;
-  if (a === 10) return true; // 10.0.0.0/8
-  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-  if (a === 192 && b === 168) return true; // 192.168.0.0/16
-  if (a === 127) return true; // 127.0.0.0/8 loopback
-  if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local
-  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
-  if (a === 0) return true; // 0.0.0.0/8 "this network" / unspecified
-  if (a >= 224) return true; // 224.0.0.0/4 multicast + reserved
-  return false;
-}
+// Non-public ranges. BlockList also matches IPv4-mapped IPv6 (::ffff:a.b.c.d) against the IPv4 rules.
+const BLOCKED = new BlockList();
+for (const [net, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
+  ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15],
+  ["198.51.100.0", 24], ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
+] as const) BLOCKED.addSubnet(net, prefix, "ipv4");
+for (const [net, prefix] of [
+  ["::", 128], ["::1", 128], ["::", 96], ["64:ff9b::", 96], ["100::", 64], ["2001:db8::", 32],
+  ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8],
+] as const) BLOCKED.addSubnet(net, prefix, "ipv6");
 
-function isPrivateIPv6(address: string): boolean {
-  if (address === "::1" || address === "::" || address === "0:0:0:0:0:0:0:0" || address === "0:0:0:0:0:0:0:1") {
-    return true;
-  }
-  const firstGroup = address.split(":")[0] ?? "";
-  if (firstGroup.length === 0) return false; // other "::..." forms: not classified as private here
-  const groupNum = parseInt(firstGroup, 16);
-  if (Number.isNaN(groupNum)) return false;
-  if (groupNum >= 0xfc00 && groupNum <= 0xfdff) return true; // fc00::/7 unique local
-  if (groupNum >= 0xfe80 && groupNum <= 0xfebf) return true; // fe80::/10 link-local
-  if (groupNum >= 0xff00 && groupNum <= 0xffff) return true; // ff00::/8 multicast
-  return false;
-}
-
-/** True when `ip` is a loopback, private, link-local, CGNAT, multicast or unspecified address. */
+/** True for loopback, private, link-local, CGNAT, multicast, reserved or unparseable addresses (fail closed). */
 export function isPrivateAddress(ip: string): boolean {
-  const address = ip.trim().toLowerCase();
-
-  // IPv4-mapped IPv6, e.g. "::ffff:127.0.0.1"
-  const mapped = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped) {
-    return isPrivateIPv4(mapped[1]);
-  }
-
-  if (address.includes(":")) {
-    return isPrivateIPv6(address);
-  }
-  return isPrivateIPv4(address);
+  const address = ip.trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+  const family = isIP(address);
+  if (family === 4) return BLOCKED.check(address, "ipv4");
+  if (family === 6) return BLOCKED.check(address, "ipv6");
+  return true;
 }
 
 /** Validates that `url` is http(s), has no embedded credentials, and resolves only to public addresses. */

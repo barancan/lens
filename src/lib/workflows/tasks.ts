@@ -46,15 +46,26 @@ export async function startResearch(
 /** Record a comment on a published post and start the reply workflow. */
 export async function ingestComment(
   deps: AgentDeps,
-  input: { postId: string; author: string; body: string; externalId?: string | null },
+  input: { postId: string; author: string; body: string; externalId?: string | null; metadata?: Record<string, unknown> },
 ): Promise<{ comment: Comment; task: Task }> {
   const comment = await createComment(input);
-  return { comment, task: await ingestCommentTask(deps, comment.id, `Respond to comment by ${input.author}`) };
+  return {
+    comment,
+    task: await ingestCommentTask(deps, comment.id, { objective: `Respond to comment by ${input.author}` }),
+  };
 }
 
-/** Start the reply workflow for an already-stored comment. */
-export async function ingestCommentTask(deps: AgentDeps, commentId: string, objective = "Respond to comment"): Promise<Task> {
-  const task = await createTask({ type: "comment_reply", objective, origin: "user", input: { commentId } });
+/**
+ * Start the reply workflow for an already-stored comment. `origin` defaults
+ * to "user" but a scheduled poller passes "schedule" so runs are attributable.
+ */
+export async function ingestCommentTask(
+  deps: AgentDeps,
+  commentId: string,
+  opts: { objective?: string; origin?: TaskOrigin } = {},
+): Promise<Task> {
+  const { objective = "Respond to comment", origin = "user" } = opts;
+  const task = await createTask({ type: "comment_reply", objective, origin, input: { commentId } });
   deps.launchTask(task.id);
   return task;
 }

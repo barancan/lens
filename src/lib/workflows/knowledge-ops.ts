@@ -125,6 +125,7 @@ export async function decideKnowledgeUpdates(ctx: RunContext, findings: Extracte
             includeChunks: false,
           }),
         (r) => r.nodes.map((n) => ({ id: n.node.id, similarity: n.similarity })),
+        { bookkeeping: true },
       ),
     ),
   );
@@ -232,6 +233,7 @@ async function addEvidenceSafely(
           runId: ctx.runId,
         }),
       (r) => ({ evidenceId: r.evidence.id, created: r.created }),
+      { bookkeeping: true },
     );
     result.evidenceIds.push(evidence.id);
     if (!result.touchedClaimIds.includes(input.claimId)) result.touchedClaimIds.push(input.claimId);
@@ -305,13 +307,19 @@ export async function applyKnowledgeUpdates(
       { statement: f.statement },
       () => (f.kind === "observation" ? k.createObservation(input) : k.createClaim(input)),
       (r) => ({ id: r.node.id, created: r.created }),
+      { bookkeeping: true },
     );
     if (created) result.createdNodeIds.push(node.id);
     await addEvidenceSafely(ctx, result, { claimId: node.id, source, quote: f.quote, evidenceType: "supports", strength: f.strength });
 
     if (d.action === "create_and_contradict" && d.targetId) {
-      await ctx.trace("link_knowledge", { from: node.id, to: d.targetId, type: "contradicts" }, () =>
-        k.linkKnowledge({ fromId: node.id, toId: d.targetId!, relationshipType: "contradicts", sourceId: source.id, metadata: { rationale: d.rationale } }),
+      await ctx.trace(
+        "link_knowledge",
+        { from: node.id, to: d.targetId, type: "contradicts" },
+        () =>
+          k.linkKnowledge({ fromId: node.id, toId: d.targetId!, relationshipType: "contradicts", sourceId: source.id, metadata: { rationale: d.rationale } }),
+        undefined,
+        { bookkeeping: true },
       );
       await addEvidenceSafely(ctx, result, {
         claimId: d.targetId,
@@ -344,6 +352,7 @@ export async function storeOpenQuestions(
           runId: ctx.runId,
         }),
       (r) => ({ id: r.node.id, created: r.created }),
+      { bookkeeping: true },
     );
     if (created) result.questionIds.push(node.id);
   }
@@ -375,6 +384,7 @@ export async function gatherMaterial(ctx: RunContext, topic: string, focusNodeId
     { query: topic },
     () => k.searchKnowledge(topic, { limit: 8, chunkLimit: 3 }),
     (r) => ({ nodes: r.nodes.length, chunks: r.chunks.length }),
+    { bookkeeping: true },
   );
   const nodeIds = [...new Set([...focusNodeIds, ...retrieved.nodes.map((n) => n.node.id)])];
   const sourceMap = new Map<string, CitableSource>();
@@ -433,13 +443,27 @@ export function finalizeCitations(body: string, sources: CitableSource[]): { bod
 
 export async function composePost(
   ctx: RunContext,
-  input: { topic: string; angle?: string; material: PostMaterial; previous?: { title: string; body: string }; feedback?: string },
+  input: {
+    topic: string;
+    angle?: string;
+    material: PostMaterial;
+    previous?: { title: string; body: string };
+    feedback?: string;
+    postType?: "discussion" | "claim";
+  },
 ): Promise<{ title: string; body: string; rationale: string; citedSourceIds: string[] }> {
   const parts = [
     `Write a short research update post for the LENS project.`,
     `Topic: ${input.topic}`,
     input.angle ? `Angle: ${input.angle}` : "",
     `Use ONLY the knowledge below. Cite sources with [n] using the CITABLE SOURCES numbering. Distinguish clearly what sources report from what LENS infers. State what remains unresolved.`,
+    input.postType === "claim"
+      ? `This will be published as a CLAIM: posting it automatically opens a public peer review where other researchers vote on whether it is scientifically sound. The body MUST:
+- State the claim as ONE falsifiable sentence.
+- Give the reasoning behind it.
+- Include an explicit falsification test: the specific observation or experiment that would confirm or refute the claim. Label this line clearly, e.g. "Test/falsification: ...".
+- Cite sources with [n] that support this specific claim, not merely sources that are on-topic.`
+      : "",
     input.previous ? `PREVIOUS DRAFT:\nTitle: ${input.previous.title}\n${input.previous.body}` : "",
     input.feedback ? `OPERATOR FEEDBACK (address this):\n${input.feedback}` : "",
     `KNOWLEDGE:\n${input.material.context}`,
@@ -456,10 +480,10 @@ export async function composePost(
 
 export async function draftPost(
   ctx: RunContext,
-  input: { topic: string; angle?: string; rationale?: string; focusNodeIds?: string[] },
+  input: { topic: string; angle?: string; rationale?: string; focusNodeIds?: string[]; postType?: "discussion" | "claim" },
 ): Promise<Post> {
   const material = await gatherMaterial(ctx, input.topic, input.focusNodeIds);
-  const written = await composePost(ctx, { topic: input.topic, angle: input.angle, material });
+  const written = await composePost(ctx, { topic: input.topic, angle: input.angle, material, postType: input.postType });
   const ref = ctx.llm.modelFor("post_writer");
   return ctx.trace(
     "draft_post",
@@ -479,8 +503,13 @@ export async function draftPost(
           provider: ref.provider,
           model: ref.model,
           revisions: [],
+          // Suggested type for the publish panel/publisher to default to; the
+          // operator can still override it (see publishDraft in approvals/service.ts,
+          // which reads metadata.openlabs as Partial<PublishHints>).
+          ...(input.postType ? { openlabs: { type: input.postType } } : {}),
         },
       }),
     (p) => ({ postId: p.id }),
+    { bookkeeping: true },
   );
 }

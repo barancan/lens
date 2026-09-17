@@ -6,13 +6,17 @@ import { z } from "zod";
 import {
   approveDraft,
   editDraft,
+  getDraft,
   publishDraft,
   rejectDraft,
   type DraftKind,
 } from "@/lib/approvals/service";
 import { requireSession } from "@/lib/auth/server";
+import { pollExternalComments, type PollResult } from "@/lib/comments/poll";
+import { openLabsPostUrl } from "@/lib/integrations/openlabs";
 import { createThread, deleteThread } from "@/lib/repo/chat";
-import { getPost } from "@/lib/repo/posts";
+import { getPost, updatePost } from "@/lib/repo/posts";
+import { updateReply } from "@/lib/repo/replies";
 import { SETTINGS_KEYS, type SettingsKey } from "@/lib/settings/schema";
 import { removeFocusDirective, SettingsValidationError, updateSettings } from "@/lib/settings/service";
 import { runChatTurn } from "@/lib/workflows/chat";
@@ -134,11 +138,93 @@ export async function regenerateDraftAction(kind: DraftKind, id: string, feedbac
   }
 }
 
-export async function publishDraftAction(kind: DraftKind, id: string, externalUrl?: string): Promise<ActionResult> {
+const publishOptsSchema = z.object({
+  externalUrl: z.string().optional(),
+  type: z.enum(["claim", "discussion"]).optional(),
+  topic: z.string().min(1).optional(),
+  tags: z.array(z.string()).max(5).optional(),
+});
+
+/**
+ * Publish an approved draft. `publishDraft` (in `approvals/service.ts`) reads
+ * per-draft platform hints off `draft.metadata.openlabs` (an operator choice
+ * beats the `openlabs` settings defaults there) — it does not take hints as
+ * an argument. So an operator's type/topic/tags choice from the publish
+ * panel is persisted onto the draft's own metadata first, then `publishDraft`
+ * is called with no further options for that part; `externalUrl` is still
+ * passed straight through for the manual-publisher path.
+ */
+export async function publishDraftAction(
+  kind: DraftKind,
+  id: string,
+  opts?: { externalUrl?: string; type?: "claim" | "discussion"; topic?: string; tags?: string[] },
+): Promise<ActionResult> {
   await requireSession();
   try {
-    const url = externalUrl?.trim() ? z.url().parse(externalUrl.trim()) : null;
-    await publishDraft(draftKind.parse(kind), uuid.parse(id), { externalUrl: url });
+    const parsedKind = draftKind.parse(kind);
+    const parsedId = uuid.parse(id);
+    const parsed = publishOptsSchema.parse(opts ?? {});
+    const externalUrl = parsed.externalUrl?.trim() ? z.url().parse(parsed.externalUrl.trim()) : null;
+
+    if (parsed.type || parsed.topic || parsed.tags) {
+      const draft = await getDraft(parsedKind, parsedId);
+      const existingHints = (draft.metadata.openlabs ?? {}) as Record<string, unknown>;
+      const metadata = {
+        ...draft.metadata,
+        openlabs: {
+          ...existingHints,
+          ...(parsed.type ? { type: parsed.type } : {}),
+          ...(parsed.topic ? { topic: parsed.topic } : {}),
+          ...(parsed.tags ? { tags: parsed.tags } : {}),
+        },
+      };
+      if (parsedKind === "post") await updatePost(parsedId, { metadata });
+      else await updateReply(parsedId, { metadata });
+    }
+
+    await publishDraft(parsedKind, parsedId, { externalUrl });
+    revalidateDrafts(id);
+    return { ok: true };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+/** On-demand comment pull, the primary path (Vercel Hobby cron is daily-only, so it's a safety net). */
+export async function pollCommentsAction(): Promise<ActionResult<PollResult>> {
+  await requireSession();
+  try {
+    const result = await pollExternalComments(getAgentDeps());
+    revalidatePath("/dashboard");
+    revalidatePath("/drafts");
+    return { ok: true, data: result };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+const externalIdPattern = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
+
+/**
+ * Operator backfill: attach a platform post id to a published post that
+ * never got one — the platform accepted the write but the response never
+ * arrived, or the post predates OpenLabs. Comment polling only visits posts
+ * with an `external_id`, so this is what unblocks it for those posts.
+ */
+export async function linkExternalPostAction(postId: string, idOrUrl: string): Promise<ActionResult> {
+  await requireSession();
+  try {
+    const id = uuid.parse(postId);
+    const raw = z.string().min(1).parse(idOrUrl).trim();
+    const match = raw.match(externalIdPattern);
+    const externalId = uuid.parse(match ? match[0] : raw);
+
+    const post = await getPost(id);
+    if (!post) throw new Error("Post not found");
+    if (post.status !== "published") throw new Error("Only a published post can be linked to an external post");
+    if (post.externalId) throw new Error("This post is already linked to an external id");
+
+    await updatePost(id, { externalId, externalUrl: openLabsPostUrl(externalId) });
     revalidateDrafts(id);
     return { ok: true };
   } catch (err) {

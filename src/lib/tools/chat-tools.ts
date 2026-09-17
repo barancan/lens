@@ -143,7 +143,7 @@ export function createChatTools(ctx: RunContext): AnyAgentTool[] {
       description: "Start the reply workflow for an existing, unprocessed comment (drafts a reply into the approval queue).",
       schema: z.object({ commentId: z.uuid() }),
       async execute({ commentId }) {
-        const task = await ingestCommentTask(ctx.deps, commentId);
+        const task = await ingestCommentTask(ctx.deps, commentId, {});
         return ok({ taskId: task.id });
       },
     }),

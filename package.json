@@ -14,7 +14,9 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "db:seed": "tsx scripts/seed.ts",
     "db:seed:sql": "tsx scripts/seed.ts --sql > supabase/seed.sql",
-    "hash-password": "tsx scripts/hash-password.ts"
+    "hash-password": "tsx scripts/hash-password.ts",
+    "openlabs:onboard": "tsx scripts/openlabs-onboard.ts",
+    "openlabs:smoke": "tsx scripts/openlabs-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",

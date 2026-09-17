@@ -6,8 +6,15 @@ import {
   listComments,
   updateComment,
 } from "@/lib/repo/comments";
-import { createPost, getPost, listPosts, updatePost } from "@/lib/repo/posts";
-import { createReply, getReply, listReplies, updateReply } from "@/lib/repo/replies";
+import { claimForPublish as claimPostForPublish, createPost, getPost, listPosts, updatePost } from "@/lib/repo/posts";
+import {
+  claimForPublish as claimReplyForPublish,
+  createReply,
+  findReplyByExternalId,
+  getReply,
+  listReplies,
+  updateReply,
+} from "@/lib/repo/replies";
 import { useTestDb } from "../helpers/db";
 
 describe("repo/posts", () => {
@@ -53,6 +60,36 @@ describe("repo/posts", () => {
     expect((await listPosts()).map((p) => p.id)).toEqual([b.id, a.id]);
     expect((await listPosts({ statuses: ["approved"] })).map((p) => p.id)).toEqual([b.id]);
     expect((await listPosts({ statuses: ["draft"] })).map((p) => p.id)).toEqual([a.id]);
+  });
+
+  it("listPosts({ withExternalId: true }) only returns posts with an external_id", async () => {
+    const withExt = await createPost({ title: "has ext", body: "b" });
+    await updatePost(withExt.id, { externalId: "ol-1", externalUrl: "https://x.test/1" });
+    await createPost({ title: "no ext", body: "b" });
+
+    expect((await listPosts({ withExternalId: true })).map((p) => p.id)).toEqual([withExt.id]);
+    expect(await listPosts({ withExternalId: false })).toHaveLength(2);
+    expect(await listPosts()).toHaveLength(2);
+  });
+
+  it("claimForPublish wins only from 'approved' and is null otherwise", async () => {
+    const draft = await createPost({ title: "draft", body: "b" });
+    expect(await claimPostForPublish(draft.id)).toBeNull();
+
+    const approved = await createPost({ title: "approved", body: "b", status: "approved" });
+    const claimed = await claimPostForPublish(approved.id);
+    expect(claimed?.status).toBe("published");
+    expect(claimed?.publishedAt).not.toBeNull();
+
+    // Already published: a second claim never wins.
+    expect(await claimPostForPublish(approved.id)).toBeNull();
+  });
+
+  it("claimForPublish: only one of two concurrent claims wins", async () => {
+    const approved = await createPost({ title: "approved", body: "b", status: "approved" });
+    const [first, second] = await Promise.all([claimPostForPublish(approved.id), claimPostForPublish(approved.id)]);
+    const winners = [first, second].filter((r) => r !== null);
+    expect(winners).toHaveLength(1);
   });
 });
 
@@ -126,5 +163,44 @@ describe("repo/replies", () => {
     expect(byStatus.map((r) => r.id)).toEqual([reply.id]);
     const byComment = await listReplies({ commentId: comment.id });
     expect(byComment.map((r) => r.id)).toEqual([reply.id]);
+  });
+
+  it("findReplyByExternalId hits and misses", async () => {
+    const post = await createPost({ title: "t", body: "b" });
+    const comment = await createComment({ postId: post.id, author: "a", body: "1" });
+    const reply = await createReply({ commentId: comment.id, postId: post.id, body: "thanks" });
+    await updateReply(reply.id, { externalId: "ol-reply-1" });
+
+    const found = await findReplyByExternalId("ol-reply-1");
+    expect(found?.id).toBe(reply.id);
+    expect(await findReplyByExternalId("missing")).toBeNull();
+  });
+
+  it("claimForPublish wins only from 'approved' and only one of two concurrent claims wins", async () => {
+    const post = await createPost({ title: "t", body: "b" });
+    const comment = await createComment({ postId: post.id, author: "a", body: "1" });
+
+    const draft = await createReply({ commentId: comment.id, postId: post.id, body: "draft reply" });
+    expect(await claimReplyForPublish(draft.id)).toBeNull();
+
+    const approved = await createReply({
+      commentId: comment.id,
+      postId: post.id,
+      body: "approved reply",
+      status: "approved",
+    });
+    const claimed = await claimReplyForPublish(approved.id);
+    expect(claimed?.status).toBe("published");
+    expect(claimed?.publishedAt).not.toBeNull();
+    expect(await claimReplyForPublish(approved.id)).toBeNull();
+
+    const approved2 = await createReply({
+      commentId: comment.id,
+      postId: post.id,
+      body: "approved reply 2",
+      status: "approved",
+    });
+    const [first, second] = await Promise.all([claimReplyForPublish(approved2.id), claimReplyForPublish(approved2.id)]);
+    expect([first, second].filter((r) => r !== null)).toHaveLength(1);
   });
 });

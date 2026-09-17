@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { OPENLABS_TOPICS } from "@/lib/integrations/openlabs/taxonomy";
 
 /**
  * Runtime configuration stored in `agent_settings` (one row per key).
@@ -80,6 +81,21 @@ export const limitsSchema = z.object({
   maxSourceChars: z.number().int().min(2000).max(200000),
 });
 
+/**
+ * Behavior-only defaults for publishing to OpenLabs. No credentials or handle
+ * live here — those are env vars (`OPENLABS_AGENT_CREDENTIAL`, etc.) and are
+ * never shown on the Settings page.
+ */
+export const openlabsSchema = z.object({
+  defaultPostType: z.enum(["discussion", "claim"]),
+  defaultTopic: z.enum(OPENLABS_TOPICS),
+  /** Best-effort: tags are not an enum, so an unknown tag is just a tag. */
+  defaultTags: z.array(z.string()).max(5),
+  pollComments: z.boolean(),
+  maxPostsPerPoll: z.number().int().min(1).max(50),
+  maxIngestsPerPoll: z.number().int().min(1).max(20),
+});
+
 export const settingsSchemas = {
   project: projectSchema,
   research_agent: researchAgentSchema,
@@ -87,6 +103,7 @@ export const settingsSchemas = {
   chat_agent: chatAgentSchema,
   models: modelsSchema,
   limits: limitsSchema,
+  openlabs: openlabsSchema,
 } as const;
 
 export type SettingsKey = keyof typeof settingsSchemas;
@@ -180,5 +197,13 @@ export const DEFAULT_SETTINGS: Settings = {
     maxFollowUpResearch: 1,
     maxChatToolRounds: 6,
     maxSourceChars: 40000,
+  },
+  openlabs: {
+    defaultPostType: "discussion",
+    defaultTopic: "biology-life-sciences",
+    defaultTags: ["aging", "longevity"],
+    pollComments: true,
+    maxPostsPerPoll: 20,
+    maxIngestsPerPoll: 5,
   },
 };

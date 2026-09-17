@@ -69,17 +69,37 @@ export async function getPost(id: string): Promise<Post | null> {
   return row ? mapPost(row) : null;
 }
 
-export async function listPosts(filter: { statuses?: DraftStatus[]; limit?: number } = {}): Promise<Post[]> {
+export async function listPosts(
+  filter: { statuses?: DraftStatus[]; withExternalId?: boolean; limit?: number } = {},
+): Promise<Post[]> {
   const sql = db();
-  const { statuses, limit = 50 } = filter;
+  const { statuses, withExternalId, limit = 50 } = filter;
   const rows = await sql<PostRow[]>`
     select * from posts
     where true
       ${statuses && statuses.length ? sql`and status = any(${statuses})` : sql``}
+      ${withExternalId ? sql`and external_id is not null` : sql``}
     order by created_at desc
     limit ${limit}
   `;
   return rows.map(mapPost);
+}
+
+/**
+ * Compare-and-swap publish claim: only wins when the row is still `approved`.
+ * Two concurrent publish attempts can both read `approved`, but only one
+ * `update ... where status = 'approved'` matches a row, so only one wins.
+ * Returns `null` when this call did not win the race.
+ */
+export async function claimForPublish(id: string): Promise<Post | null> {
+  const sql = db();
+  const [row] = await sql<PostRow[]>`
+    update posts
+    set status = 'published', published_at = now(), updated_at = now()
+    where id = ${id} and status = 'approved'
+    returning *
+  `;
+  return row ? mapPost(row) : null;
 }
 
 export async function updatePost(

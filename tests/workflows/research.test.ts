@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { listPosts } from "@/lib/repo/posts";
 import { getRun } from "@/lib/repo/runs";
 import { createTask, getTask } from "@/lib/repo/tasks";
+import { DEFAULT_SETTINGS } from "@/lib/settings/schema";
+import { updateSettings } from "@/lib/settings/service";
 import type { LLMRequest } from "@/lib/llm/types";
 import { runTask } from "@/lib/workflows/tasks";
 import { idsIn, makeDeps, ScriptedProvider } from "../helpers/agent";
@@ -35,6 +37,7 @@ const synthesis: Handler = (_req, prompt) => {
     postTopic: "Teratoma risk of cyclic OSK",
     postAngle: "what one mouse study does and does not show",
     postRationale: "First direct safety evidence.",
+    postType: "discussion",
     focusNodeIds: touched,
   };
 };
@@ -158,6 +161,28 @@ describe("research workflow", () => {
     expect(run2?.steps.map((s) => s.name)).toEqual(["synthesize", "draft"]);
   });
 
+  it("counts only external calls against the tool-call budget", async () => {
+    const { deps } = makeDeps(researchScript());
+    const task = await createTask({ type: "research", objective: "x", origin: "user" });
+
+    // One search and one fetch are external; knowledge-store reads and writes are not budgeted.
+    await updateSettings("limits", { ...DEFAULT_SETTINGS.limits, maxToolCalls: 2 });
+    const ok = await runTask(task.id, deps);
+    expect(ok.error).toBeUndefined();
+    expect(ok.status).toBe("awaiting_approval");
+    const run = await getRun(ok.runId!);
+    expect(run!.toolCalls.length).toBeGreaterThan(2);
+  });
+
+  it("fails with an actionable error when the tool-call budget runs out", async () => {
+    const { deps } = makeDeps(researchScript());
+    const task = await createTask({ type: "research", objective: "x", origin: "user" });
+    await updateSettings("limits", { ...DEFAULT_SETTINGS.limits, maxToolCalls: 1 });
+    const limited = await runTask(task.id, deps);
+    expect(limited.status).toBe("failed");
+    expect(limited.error).toMatch(/^Step "read" failed: Tool call limit reached \(1\)/);
+  });
+
   it("reads operator-provided URLs even without search results", async () => {
     const provider = researchScript({
       research_plan: () => ({ rationale: "r", subQuestions: ["q"], queries: ["nothing matches this"] }),
@@ -174,5 +199,45 @@ describe("research workflow", () => {
     const sources = await deps.knowledge.listSources({});
     expect(sources.map((s) => s.url)).toContain("https://example.com/page");
     expect(provider.calls("source_selection")).toHaveLength(0);
+  });
+
+  function promptTextOf(req: LLMRequest): string {
+    return req.messages.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
+  }
+
+  it("suggests a claim and asks the post writer for a falsification test when the synthesis marks it as one", async () => {
+    const provider = researchScript({
+      research_synthesis: (req, prompt) => ({ ...(synthesis(req, prompt) as Record<string, unknown>), postType: "claim" }),
+    });
+    const { deps } = makeDeps(provider);
+    const task = await createTask({ type: "research", objective: "x", origin: "user" });
+
+    const outcome = await runTask(task.id, deps);
+    expect(outcome.status).toBe("awaiting_approval");
+
+    const [post] = await listPosts();
+    expect(post.metadata.openlabs).toEqual({ type: "claim" });
+
+    const draftCall = provider.calls("post_draft").at(-1);
+    expect(draftCall).toBeDefined();
+    const promptText = promptTextOf(draftCall!);
+    expect(promptText).toMatch(/falsification/i);
+    expect(promptText.toUpperCase()).toContain("CLAIM");
+  });
+
+  it("defaults to discussion when the synthesis does not mark a claim, leaving the post-writer prompt unchanged", async () => {
+    const provider = researchScript();
+    const { deps } = makeDeps(provider);
+    const task = await createTask({ type: "research", objective: "x", origin: "user" });
+
+    const outcome = await runTask(task.id, deps);
+    expect(outcome.status).toBe("awaiting_approval");
+
+    const [post] = await listPosts();
+    expect(post.metadata.openlabs).toEqual({ type: "discussion" });
+
+    const draftCall = provider.calls("post_draft").at(-1);
+    expect(draftCall).toBeDefined();
+    expect(promptTextOf(draftCall!)).not.toMatch(/falsification/i);
   });
 });

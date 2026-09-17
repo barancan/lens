@@ -90,6 +90,30 @@ export async function listReplies(
   return rows.map(mapReply);
 }
 
+/**
+ * Compare-and-swap publish claim: only wins when the row is still `approved`.
+ * Mirrors `claimForPublish` in `repo/posts.ts` — see there for why this needs
+ * to be a single atomic UPDATE rather than a read-then-write.
+ */
+export async function claimForPublish(id: string): Promise<Reply | null> {
+  const sql = db();
+  const [row] = await sql<ReplyRow[]>`
+    update replies
+    set status = 'published', published_at = now(), updated_at = now()
+    where id = ${id} and status = 'approved'
+    returning *
+  `;
+  return row ? mapReply(row) : null;
+}
+
+export async function findReplyByExternalId(externalId: string): Promise<Reply | null> {
+  const sql = db();
+  const [row] = await sql<ReplyRow[]>`
+    select * from replies where external_id = ${externalId}
+  `;
+  return row ? mapReply(row) : null;
+}
+
 export async function updateReply(
   id: string,
   patch: Partial<

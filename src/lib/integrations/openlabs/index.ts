@@ -1,41 +1,22 @@
 /**
- * OpenLabs integration — documented stub.
+ * OpenLabs integration barrel. `import { OpenLabsPublisher, OpenLabsCommentSource }
+ * from "@/lib/integrations/openlabs"` is the stable surface; the adapters
+ * themselves live in `publisher.ts`/`comment-source.ts`, auth/HTTP/REST in
+ * `auth.ts`/`http.ts`/`client.ts`.
  *
- * OpenLabs is the (future) platform where LENS publishes posts/replies and
- * reads back comments on them. Not configured yet. To wire it up:
- *   1. Add `OPENLABS_API_URL` and `OPENLABS_API_KEY` to the env schema in
- *      `src/lib/env.ts`.
- *   2. Implement `OpenLabsPublisher.publish()` against the OpenLabs API,
- *      mapping its response into `PublishResult` (externalId/externalUrl).
- *   3. Implement `OpenLabsCommentSource.listComments()` to fetch comments for
- *      a published post by external id, mapping them into `ExternalComment[]`.
- *   4. Flip `isEnabled()` on both classes to check the new env vars.
+ * Enablement is env-only (`isOpenLabsConfigured()` in `config.ts`): `isEnabled()`
+ * is synchronous and settings are DB-backed, so an adapter must never touch
+ * settings or the DB directly.
  *
- * See `src/lib/integrations/types.ts` for the `Publisher` / `CommentSource`
- * contracts these implement.
+ * There is no API key. A one-time-onboarded PERMANENT `agentCredential`
+ * (`OPENLABS_AGENT_CREDENTIAL`) mints short-lived session tokens per the
+ * two-leg flow in `auth.ts`. Run `pnpm openlabs:onboard` once to obtain it,
+ * and `pnpm openlabs:smoke` to verify a credential already in `.env.local`.
  */
-import type { CommentSource, ExternalComment, Publisher, PublishableDraft, PublishResult } from "@/lib/integrations/types";
-
-export class OpenLabsPublisher implements Publisher {
-  readonly id = "openlabs";
-
-  isEnabled(): boolean {
-    return false;
-  }
-
-  async publish(_draft: PublishableDraft): Promise<PublishResult> {
-    throw new Error("OpenLabs integration not configured");
-  }
-}
-
-export class OpenLabsCommentSource implements CommentSource {
-  readonly id = "openlabs";
-
-  isEnabled(): boolean {
-    return false;
-  }
-
-  async listComments(_postExternalId: string): Promise<ExternalComment[]> {
-    throw new Error("OpenLabs integration not configured");
-  }
-}
+export { OpenLabsPublisher } from "./publisher";
+export { OpenLabsCommentSource } from "./comment-source";
+export { isOpenLabsConfigured, openLabsConfig, openLabsPostUrl } from "./config";
+export type { OpenLabsConfig } from "./config";
+export { OpenLabsError } from "./errors";
+export { OPENLABS_TOPICS, OPENLABS_TAGS, DEFAULT_TOPIC, sanitizeTags } from "./taxonomy";
+export type { OpenLabsTopic, OpenLabsTag } from "./taxonomy";

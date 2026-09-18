@@ -96,6 +96,43 @@ export async function launchDiscoveryAction(input: { queries?: string; topic?: s
   }
 }
 
+/**
+ * Start research on a specific queued finding, now, instead of waiting for a
+ * cycle to reach it.
+ *
+ * Moves it to the front of the drill-down queue as well as setting the run's
+ * objective: the planner reads the queue itself and only takes the top few, so
+ * without the reorder a finding sitting at position 5 could be "researched now"
+ * and still not be picked up. The reorder is the visible consequence of saying
+ * "this one next".
+ */
+export async function researchQueuedFindingAction(nodeId: string): Promise<ActionResult<{ taskId: string }>> {
+  await requireSession();
+  try {
+    const id = uuid.parse(nodeId);
+    const k = getKnowledgeService();
+    const node = await k.getNode(id);
+    if (!node) return { ok: false, error: "That finding no longer exists." };
+    if (node.drillDownRequestedAt === null || node.drillDownConsumedAt !== null) {
+      return { ok: false, error: "That finding is not in the drill-down queue." };
+    }
+
+    const queue = await k.listDrillDownQueue(MAX_DRILL_DOWN_QUEUE);
+    await k.reorderDrillDownQueue([id, ...queue.map((n) => n.id).filter((other) => other !== id)]);
+
+    const objective = [`Drill down on: ${node.statement}`, node.drillDownNote ? `Operator note: ${node.drillDownNote}` : null]
+      .filter(Boolean)
+      .join("\n");
+    const task = await startResearch(getAgentDeps(), { objective, origin: "user" });
+
+    revalidatePath("/dashboard");
+    revalidatePath("/runs");
+    return { ok: true, data: { taskId: task.id } };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
 export async function resumeTaskAction(taskId: string): Promise<ActionResult> {
   await requireSession();
   try {

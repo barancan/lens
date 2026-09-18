@@ -37,8 +37,8 @@ export function RunResearchForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="max-w-xl space-y-3 rounded-lg border p-4">
-      <div>
+    <form onSubmit={handleSubmit} className="flex flex-1 flex-col gap-3 rounded-lg border p-4">
+      <div className="flex min-h-0 flex-1 flex-col">
         <label htmlFor="objective" className="mb-1 block text-xs font-medium text-muted-foreground">
           Objective (optional)
         </label>
@@ -47,6 +47,7 @@ export function RunResearchForm() {
           value={objective}
           onChange={(e) => setObjective(e.target.value)}
           placeholder="What should this research task focus on?"
+          className="min-h-20 flex-1"
         />
       </div>
       <div>
@@ -60,7 +61,7 @@ export function RunResearchForm() {
           placeholder="https://example.com/paper"
         />
       </div>
-      <div className="flex items-center gap-3">
+      <div className="mt-auto flex items-center gap-3">
         <Button type="submit" disabled={pending}>
           {pending ? "Launching…" : "Launch research"}
         </Button>

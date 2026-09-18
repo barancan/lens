@@ -13,7 +13,6 @@ import {
   Tag,
 } from "@/components/common";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getCommentSource } from "@/lib/approvals/comment-source";
 import { isOpenLabsConfigured } from "@/lib/integrations/openlabs";
 import { MAX_DRILL_DOWN_QUEUE } from "@/lib/knowledge/service";
@@ -25,6 +24,7 @@ import { getSettings } from "@/lib/settings/service";
 import { TASK_STATUSES } from "@/lib/types";
 import { getKnowledgeService } from "@/lib/workflows/runtime";
 import { formatDuration } from "../runs/format";
+import { ContinueResearchForm } from "./continue-research-form";
 import { DiscoverForm } from "./discover-form";
 import { DrillDownQueue } from "./drill-down-queue";
 import { PollCommentsButton } from "./poll-comments-button";
@@ -110,174 +110,184 @@ export default async function DashboardPage() {
         ))}
       </div>
 
-      <Section title="Research status" actions={<AutoRefresh enabled={hasActiveTasks} />}>
-        {failedTasks.length > 0 ? (
-          <Alert variant="destructive" className="mb-3">
-            <AlertTitle>
-              {failedTasks.length === 1 ? "1 task failed" : `${failedTasks.length} tasks failed`}
-            </AlertTitle>
-            <AlertDescription>
-              <ul className="space-y-1">
-                {failedTasks.map((t) => (
-                  <li key={t.id}>
-                    <span className="font-medium">{t.objective || t.id}</span>: {t.error ?? "unknown error"}
+      {/*
+        Two columns: what the operator DOES on the left, what the system is
+        SAYING on the right. Stacks to one column below xl, where a rail that
+        narrow stops being readable.
+      */}
+      <div className="grid items-start gap-8 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)]">
+        <div className="min-w-0">
+          {/* The two ways to start new work, side by side. */}
+          <div className="mb-8 grid gap-6 md:grid-cols-2">
+            <Section title="Run custom research" className="mb-0 flex flex-col">
+              <RunResearchForm />
+            </Section>
+
+            <Section title="Discover on OpenLabs" className="mb-0 flex flex-col">
+              <DiscoverForm configured={openLabsConfigured} />
+            </Section>
+          </div>
+
+          <Section title="Continue research">
+            <ContinueResearchForm queue={drillDownQueue} />
+          </Section>
+
+          <Section title="Check for comments">
+            {canPollComments ? (
+              <div className="flex flex-wrap items-center gap-3 rounded-lg border p-4">
+                <PollCommentsButton />
+                <span className="text-xs text-muted-foreground">
+                  Pulls new comments from OpenLabs and queues replies for your review.
+                </span>
+              </div>
+            ) : (
+              <EmptyState>
+                No comment source is configured. Set <code className="font-mono">OPENLABS_AGENT_CREDENTIAL</code> to
+                enable this.
+              </EmptyState>
+            )}
+          </Section>
+
+          <Section title="Recent findings">
+            {recentNodes.length === 0 ? (
+              <EmptyState>No findings yet.</EmptyState>
+            ) : (
+              <ul className="space-y-2">
+                {recentNodes.map((n) => (
+                  <li key={n.id} className="rounded-lg border p-3">
+                    <Link href={`/knowledge/nodes/${n.id}`} className="block hover:underline">
+                      <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                        <NodeTypeBadge type={n.type} origin={n.origin} />
+                        <NodeStatusBadge status={n.status} />
+                        <span className="text-xs text-muted-foreground">confidence {formatConfidence(n.confidence)}</span>
+                        <ImpactBadge impact={n.impact} title={n.impactExplanation?.reasons.join("\n")} />
+                      </div>
+                      <p className="text-sm">{n.statement}</p>
+                    </Link>
                   </li>
                 ))}
               </ul>
-              <Link href="/runs" className="underline">
-                Review and resume on the Runs page
-              </Link>
-            </AlertDescription>
-          </Alert>
-        ) : null}
-        <div className="mb-3 flex flex-wrap gap-1.5">
-          {TASK_STATUSES.map((s) => (
-            <Tag key={s} tone="neutral">
-              {s.replace(/_/g, " ")}: {taskCounts[s]}
-            </Tag>
-          ))}
-        </div>
-        {activeTasks.length === 0 ? (
-          <EmptyState>No queued or running tasks.</EmptyState>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Objective</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Created</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {activeTasks.map((t) => (
-                <TableRow key={t.id}>
-                  <TableCell className="max-w-md whitespace-normal">{t.objective || "—"}</TableCell>
-                  <TableCell>
-                    <StatusBadge status={t.status} />
-                  </TableCell>
-                  <TableCell>{formatDate(t.createdAt)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </Section>
-
-      <div className="mb-8 grid items-start gap-6 lg:grid-cols-4">
-        <div className="flex flex-col gap-6 lg:col-span-1">
-          <Section title="Run research" className="mb-0">
-            <RunResearchForm />
+            )}
           </Section>
-          <Section title="Discover on OpenLabs" className="mb-0">
-            <DiscoverForm configured={openLabsConfigured} />
-          </Section>
-        </div>
 
-        <Section title="Queued for drill-down" className="mb-0 lg:col-span-3">
-          <DrillDownQueue
-            nodes={drillDownQueue}
-            maxTargets={limits.maxDrillDownTargets}
-            maxQueue={MAX_DRILL_DOWN_QUEUE}
-          />
-        </Section>
-      </div>
-
-      <Section title="Recent findings">
-        {recentNodes.length === 0 ? (
-          <EmptyState>No findings yet.</EmptyState>
-        ) : (
-          <ul className="space-y-2">
-            {recentNodes.map((n) => (
-              <li key={n.id} className="rounded-lg border p-3">
-                <Link href={`/knowledge/nodes/${n.id}`} className="block hover:underline">
-                  <div className="mb-1 flex flex-wrap items-center gap-1.5">
-                    <NodeTypeBadge type={n.type} origin={n.origin} />
-                    <NodeStatusBadge status={n.status} />
-                    <span className="text-xs text-muted-foreground">confidence {formatConfidence(n.confidence)}</span>
-                    <ImpactBadge impact={n.impact} title={n.impactExplanation?.reasons.join("\n")} />
-                  </div>
-                  <p className="text-sm">{n.statement}</p>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-
-      <Section title="Open questions">
-        {openQuestions.length === 0 ? (
-          <EmptyState>No open questions.</EmptyState>
-        ) : (
-          <ul className="space-y-2">
-            {openQuestions.map((n) => (
-              <li key={n.id} className="rounded-lg border p-3">
-                <Link href={`/knowledge/nodes/${n.id}`} className="hover:underline">
-                  {n.statement}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-
-      <Section title="Pending approvals" actions={canPollComments ? <PollCommentsButton /> : null}>
-        {approvals.length === 0 ? (
-          <EmptyState>Nothing awaiting review.</EmptyState>
-        ) : (
-          <ul className="space-y-2">
-            {approvals.map((a) => (
-              <li key={`${a.kind}-${a.id}`} className="rounded-lg border p-3">
-                <Link href={`/drafts/${a.kind}/${a.id}`} className="hover:underline">
-                  <Tag tone="warn">{a.kind}</Tag> <span className="ml-1">{a.label}</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-
-      <Section title="Recent runs">
-        {runs.length === 0 ? (
-          <EmptyState>No runs yet.</EmptyState>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Workflow</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Model</TableHead>
-                <TableHead>Started</TableHead>
-                <TableHead>Duration</TableHead>
-                <TableHead>Tokens in/out</TableHead>
-                <TableHead>Error</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {runs.map((r) => (
-                <TableRow key={r.id}>
-                  <TableCell>
-                    <Link href={`/runs/${r.id}`} className="hover:underline">
-                      {r.workflow}
+          <Section title="Open questions">
+            {openQuestions.length === 0 ? (
+              <EmptyState>No open questions.</EmptyState>
+            ) : (
+              <ul className="space-y-2">
+                {openQuestions.map((n) => (
+                  <li key={n.id} className="rounded-lg border p-3">
+                    <Link href={`/knowledge/nodes/${n.id}`} className="hover:underline">
+                      {n.statement}
                     </Link>
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge status={r.status} />
-                  </TableCell>
-                  <TableCell>{r.model ?? "—"}</TableCell>
-                  <TableCell>{formatDate(r.startedAt)}</TableCell>
-                  <TableCell>{formatDuration(r.startedAt, r.finishedAt)}</TableCell>
-                  <TableCell>
-                    {r.usage.inputTokens} / {r.usage.outputTokens}
-                  </TableCell>
-                  <TableCell className="max-w-xs truncate text-destructive" title={r.error ?? undefined}>
-                    {r.error ?? ""}
-                  </TableCell>
-                </TableRow>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Section>
+        </div>
+
+        <aside className="min-w-0">
+          <Section title="Research status" actions={<AutoRefresh enabled={hasActiveTasks} />}>
+            {failedTasks.length > 0 ? (
+              <Alert variant="destructive" className="mb-3">
+                <AlertTitle>{failedTasks.length === 1 ? "1 task failed" : `${failedTasks.length} tasks failed`}</AlertTitle>
+                <AlertDescription>
+                  <ul className="space-y-1">
+                    {failedTasks.map((t) => (
+                      <li key={t.id} className="line-clamp-2">
+                        <span className="font-medium">{t.objective || t.id}</span>: {t.error ?? "unknown error"}
+                      </li>
+                    ))}
+                  </ul>
+                  <Link href="/runs" className="underline">
+                    Review and resume on the Runs page
+                  </Link>
+                </AlertDescription>
+              </Alert>
+            ) : null}
+
+            <div className="mb-3 flex flex-wrap gap-1.5">
+              {TASK_STATUSES.map((s) => (
+                <Tag key={s} tone="neutral">
+                  {s.replace(/_/g, " ")}: {taskCounts[s]}
+                </Tag>
               ))}
-            </TableBody>
-          </Table>
-        )}
-      </Section>
+            </div>
+
+            {activeTasks.length === 0 ? (
+              <EmptyState>No queued or running tasks.</EmptyState>
+            ) : (
+              <ul className="space-y-2">
+                {activeTasks.map((t) => (
+                  <li key={t.id} className="rounded-lg border p-3 text-sm">
+                    <div className="mb-1 flex items-center gap-1.5">
+                      <StatusBadge status={t.status} />
+                      <span className="text-xs text-muted-foreground">{formatDate(t.createdAt)}</span>
+                    </div>
+                    <p className="line-clamp-3">{t.objective || "—"}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Section>
+
+          <Section title="Queued for drill-down">
+            <DrillDownQueue
+              nodes={drillDownQueue}
+              maxTargets={limits.maxDrillDownTargets}
+              maxQueue={MAX_DRILL_DOWN_QUEUE}
+            />
+          </Section>
+
+          <Section title="Pending approvals">
+            {approvals.length === 0 ? (
+              <EmptyState>Nothing awaiting review.</EmptyState>
+            ) : (
+              <ul className="space-y-2">
+                {approvals.map((a) => (
+                  <li key={`${a.kind}-${a.id}`} className="rounded-lg border p-3 text-sm">
+                    <Link href={`/drafts/${a.kind}/${a.id}`} className="hover:underline">
+                      <Tag tone="warn">{a.kind}</Tag> <span className="ml-1 line-clamp-2">{a.label}</span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Section>
+
+          {/* A compact signal, not the full table — that lives on the Runs page. */}
+          <Section
+            title="Recent runs"
+            actions={
+              <Link href="/runs" className="text-xs text-muted-foreground hover:text-foreground hover:underline">
+                View all
+              </Link>
+            }
+          >
+            {runs.length === 0 ? (
+              <EmptyState>No runs yet.</EmptyState>
+            ) : (
+              <ul className="space-y-2">
+                {runs.map((r) => (
+                  <li key={r.id} className="rounded-lg border p-3 text-sm">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <StatusBadge status={r.status} />
+                      <Link href={`/runs/${r.id}`} className="font-medium hover:underline">
+                        {r.workflow}
+                      </Link>
+                      <span className="text-xs text-muted-foreground">
+                        {formatDate(r.startedAt)} · {formatDuration(r.startedAt, r.finishedAt)}
+                      </span>
+                    </div>
+                    {r.error ? <p className="mt-1 line-clamp-2 text-xs text-destructive">{r.error}</p> : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Section>
+        </aside>
+      </div>
     </div>
   );
 }

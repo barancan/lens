@@ -37,7 +37,7 @@ export function DiscoverForm({ configured }: { configured: boolean }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="max-w-xl space-y-3 rounded-lg border p-4">
+    <form onSubmit={handleSubmit} className="flex flex-1 flex-col gap-3 rounded-lg border p-4">
       {!configured ? (
         <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
           No community platform is configured, so a run would find nothing. Set{" "}
@@ -45,7 +45,7 @@ export function DiscoverForm({ configured }: { configured: boolean }) {
         </p>
       ) : null}
 
-      <div>
+      <div className="flex min-h-0 flex-1 flex-col">
         <label htmlFor="queries" className="mb-1 block text-xs font-medium text-muted-foreground">
           Search terms (optional, one per line, max 4)
         </label>
@@ -54,7 +54,7 @@ export function DiscoverForm({ configured }: { configured: boolean }) {
           value={queries}
           onChange={(e) => setQueries(e.target.value)}
           placeholder={"partial reprogramming\nteratoma risk"}
-          rows={3}
+          className="min-h-20 flex-1"
         />
       </div>
 
@@ -70,7 +70,7 @@ export function DiscoverForm({ configured }: { configured: boolean }) {
         />
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="mt-auto flex items-center gap-3">
         <Button type="submit" disabled={pending}>
           {pending ? "Searching…" : "Discover"}
         </Button>

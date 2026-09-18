@@ -118,12 +118,12 @@ export default async function DashboardPage() {
       <div className="grid items-start gap-8 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)]">
         <div className="min-w-0">
           {/* The two ways to start new work, side by side. */}
-          <div className="mb-8 grid items-start gap-6 md:grid-cols-2">
-            <Section title="Run custom research" className="mb-0">
+          <div className="mb-8 grid gap-6 md:grid-cols-2">
+            <Section title="Run custom research" className="mb-0 flex flex-col">
               <RunResearchForm />
             </Section>
 
-            <Section title="Discover on OpenLabs" className="mb-0">
+            <Section title="Discover on OpenLabs" className="mb-0 flex flex-col">
               <DiscoverForm configured={openLabsConfigured} />
             </Section>
           </div>

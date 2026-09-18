@@ -168,7 +168,7 @@ export async function approveDraftAction(kind: DraftKind, id: string): Promise<A
 export async function rejectDraftAction(kind: DraftKind, id: string, reason: string): Promise<ActionResult> {
   await requireSession();
   try {
-    await rejectDraft(draftKind.parse(kind), uuid.parse(id), z.string().max(2000).parse(reason ?? ""));
+    await rejectDraft(draftKind.parse(kind), uuid.parse(id), z.string().max(20_000).parse(reason ?? ""));
     revalidateDrafts(id);
     return { ok: true };
   } catch (err) {
@@ -198,7 +198,7 @@ export async function regenerateDraftAction(kind: DraftKind, id: string, feedbac
     const task = await startRegeneration(getAgentDeps(), {
       kind: draftKind.parse(kind),
       draftId: uuid.parse(id),
-      feedback: z.string().min(1, "Feedback is required").max(2000).parse(feedback),
+      feedback: z.string().min(1, "Feedback is required").max(20_000).parse(feedback),
     });
     revalidateDrafts(id);
     return { ok: true, data: { taskId: task.id } };

@@ -1,4 +1,5 @@
 import { MockResearchSource, type MockResearchEntry } from "@/lib/integrations/research/registry";
+import type { DiscoveredItem, DiscoveryQuery, DiscoverySource } from "@/lib/integrations/types";
 import { createKnowledgeService } from "@/lib/knowledge/service";
 import type { LLMProvider, LLMRequest, LLMResponse, ToolCallPart } from "@/lib/llm/types";
 import type { AgentDeps } from "@/lib/workflows/types";
@@ -87,13 +88,53 @@ export function oskEntry(overrides: Partial<MockResearchEntry["result"]> = {}): 
   };
 }
 
-export function makeDeps(provider: LLMProvider, entries: MockResearchEntry[] = [oskEntry()]) {
+/** Returns a fixed set of community items, so discovery is deterministic. */
+export class MockDiscoverySource implements DiscoverySource {
+  readonly id = "mock-community";
+  readonly description = "Mock community platform";
+  readonly queries: DiscoveryQuery[] = [];
+
+  constructor(private readonly items: DiscoveredItem[] = []) {}
+
+  isEnabled(): boolean {
+    return true;
+  }
+
+  async search(query: DiscoveryQuery): Promise<DiscoveredItem[]> {
+    this.queries.push(query);
+    return this.items;
+  }
+}
+
+export function discoveredItem(overrides: Partial<DiscoveredItem> = {}): DiscoveredItem {
+  return {
+    sourceId: "mock-community",
+    kind: "post",
+    externalId: "post-1",
+    title: "Intermittent hypoxia as a safeguard during cyclic OSK reprogramming",
+    excerpt: "A community post proposing hypoxia preconditioning to reduce teratoma risk during OSK cycles.",
+    url: "https://example.org/post/post-1",
+    author: "methyl_maven",
+    topic: "biology-life-sciences",
+    tags: ["osk", "teratoma"],
+    createdAt: "2026-09-10T00:00:00.000Z",
+    metrics: { comments: 3, upvotes: 12 },
+    ...overrides,
+  };
+}
+
+export function makeDeps(
+  provider: LLMProvider,
+  entries: MockResearchEntry[] = [oskEntry()],
+  discovery: DiscoverySource | null = null,
+) {
   const launched: string[] = [];
   const mock = new MockResearchSource(entries);
   const deps: AgentDeps = {
     knowledge: createKnowledgeService({ embed: async (texts) => texts.map((t) => fakeEmbedding(t)) }),
     getProvider: () => provider,
     getResearchSources: () => [mock],
+    getDiscoverySource: () => discovery,
     fetchUrl: async (url) => ({
       title: `Page ${url}`,
       url,

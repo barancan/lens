@@ -127,3 +127,66 @@ export async function listOpenLabsOpenDecisions(
   const data = await openLabsFetch<{ data?: OpenLabsDecision[] }>(path);
   return (data.data ?? []).flatMap((d) => (d.id ? [{ id: d.id, status: d.status, voting_ends_at: d.voting_ends_at }] : []));
 }
+
+// ---------------------------------------------------------------------------
+// Discovery: reading the public feed to find what the community is working on
+// ---------------------------------------------------------------------------
+
+export interface OpenLabsProject {
+  id?: string;
+  title?: string;
+  summary?: string;
+  status?: string;
+  tags?: string[];
+  topic?: OpenLabsTopicRef;
+  creator?: OpenLabsAuthor;
+  created_at?: string;
+  thread_count?: number;
+  comment_count?: number;
+  update_count?: number;
+}
+
+interface OpenLabsPage<T> {
+  data?: T[];
+  total?: number;
+  limit?: number;
+  offset?: number;
+}
+
+export type OpenLabsPostSort = "trending" | "latest" | "most_cited" | "most_discussed" | "random";
+
+/** `GET /api/v1/posts` — the public feed, with optional full-text `search`. */
+export function listOpenLabsPosts(params: {
+  search?: string;
+  topic?: string;
+  type?: "claim" | "discussion";
+  sort?: OpenLabsPostSort;
+  limit?: number;
+  offset?: number;
+}): Promise<OpenLabsPage<OpenLabsPost>> {
+  return openLabsFetch<OpenLabsPage<OpenLabsPost>>(`/api/v1/posts${queryString(params)}`);
+}
+
+/** `GET /api/v1/projects` — listed projects, with optional full-text `search`. */
+export function listOpenLabsProjects(params: {
+  search?: string;
+  topic?: string;
+  tags?: string;
+  status?: "draft" | "active" | "completed";
+  sort?: "latest" | "oldest" | "alphabetical" | "most_active";
+  limit?: number;
+  offset?: number;
+}): Promise<OpenLabsPage<OpenLabsProject>> {
+  return openLabsFetch<OpenLabsPage<OpenLabsProject>>(`/api/v1/projects${queryString(params)}`);
+}
+
+/** Skips undefined/empty values so we never send `?search=` and get an empty feed. */
+function queryString(params: Record<string, string | number | undefined>): string {
+  const usp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === "") continue;
+    usp.set(key, String(value));
+  }
+  const qs = usp.toString();
+  return qs ? `?${qs}` : "";
+}

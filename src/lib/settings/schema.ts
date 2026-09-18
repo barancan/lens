@@ -81,6 +81,10 @@ export const limitsSchema = z.object({
   maxChatToolRounds: z.number().int().min(1).max(20),
   /** How many operator drill-down requests one run may pick up. */
   maxDrillDownTargets: z.number().int().min(1).max(10),
+  /** Community items one discovery run may look at. */
+  maxDiscoveryResults: z.number().int().min(1).max(50),
+  /** New open questions one discovery run may record. */
+  maxQuestionsPerDiscovery: z.number().int().min(1).max(10),
   maxSourceChars: z.number().int().min(2000).max(200000),
 });
 
@@ -220,6 +224,8 @@ export const DEFAULT_SETTINGS: Settings = {
     maxFollowUpResearch: 1,
     maxChatToolRounds: 6,
     maxDrillDownTargets: 3,
+    maxDiscoveryResults: 15,
+    maxQuestionsPerDiscovery: 5,
     maxSourceChars: 40000,
   },
   schedule: {

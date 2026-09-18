@@ -22,7 +22,7 @@ import { removeFocusDirective, SettingsValidationError, updateSettings } from "@
 import { runChatTurn } from "@/lib/workflows/chat";
 import { MAX_DRILL_DOWN_QUEUE } from "@/lib/knowledge/service";
 import { getAgentDeps, getKnowledgeService, launchInBackground } from "@/lib/workflows/runtime";
-import { ingestComment, startRegeneration, startResearch } from "@/lib/workflows/tasks";
+import { ingestComment, startDiscovery, startRegeneration, startResearch } from "@/lib/workflows/tasks";
 
 /**
  * Server actions used by the UI. Every action re-checks the session: server
@@ -55,6 +55,37 @@ export async function launchResearchAction(input: { objective?: string; urls?: s
     const task = await startResearch(getAgentDeps(), {
       objective: z.string().max(1000).optional().parse(input.objective),
       urls: parsedUrls,
+      origin: "user",
+    });
+    revalidatePath("/dashboard");
+    revalidatePath("/runs");
+    return { ok: true, data: { taskId: task.id } };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+/**
+ * Search the community platform and turn what it finds into open questions.
+ * Queries default to the project's research question when none are given.
+ */
+export async function launchDiscoveryAction(input: { queries?: string; topic?: string }): Promise<
+  ActionResult<{ taskId: string }>
+> {
+  await requireSession();
+  try {
+    const queries = z
+      .array(z.string().min(2).max(200))
+      .max(4)
+      .parse(
+        (input.queries ?? "")
+          .split("\n")
+          .map((q) => q.trim())
+          .filter(Boolean),
+      );
+    const task = await startDiscovery(getAgentDeps(), {
+      queries,
+      topic: z.string().max(100).optional().parse(input.topic?.trim() || undefined),
       origin: "user",
     });
     revalidatePath("/dashboard");

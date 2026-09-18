@@ -160,7 +160,7 @@ export interface KnowledgeEdge {
 // ---------------------------------------------------------------------------
 // Tasks & runs
 // ---------------------------------------------------------------------------
-export const TASK_TYPES = ["research", "comment_reply", "regenerate_draft"] as const;
+export const TASK_TYPES = ["research", "comment_reply", "regenerate_draft", "discover"] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
 export const TASK_STATUSES = ["queued", "running", "awaiting_approval", "completed", "failed", "cancelled"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];

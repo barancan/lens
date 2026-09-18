@@ -1,5 +1,6 @@
 import type { KnowledgeService } from "@/lib/knowledge/service";
 import type { ProviderName, LLMProvider } from "@/lib/llm/types";
+import type { DiscoverySource } from "@/lib/integrations/types";
 import type { ResearchSource, SourceDocument } from "@/lib/research/types";
 import type { Settings, WorkflowModelKey } from "@/lib/settings/schema";
 import type { Task, TaskStatus, ToolCallLog } from "@/lib/types";
@@ -10,6 +11,8 @@ export interface AgentDeps {
   knowledge: KnowledgeService;
   getProvider(name: ProviderName): LLMProvider;
   getResearchSources(enabledIds: string[]): ResearchSource[];
+  /** Null when no community platform is configured; the discover workflow then halts. */
+  getDiscoverySource(): DiscoverySource | null;
   fetchUrl(url: string): Promise<SourceDocument>;
   /** Fire-and-forget execution of a queued task (Vercel: `after()`). */
   launchTask(taskId: string): void;

@@ -6,7 +6,7 @@ import { listComments } from "@/lib/repo/comments";
 import { addFocusDirective } from "@/lib/settings/service";
 import { NODE_STATUSES, NODE_TYPES, EVIDENCE_TYPES, SOURCE_TYPES } from "@/lib/types";
 import { draftPost } from "@/lib/workflows/knowledge-ops";
-import { ingestCommentTask, startResearch } from "@/lib/workflows/tasks";
+import { ingestCommentTask, startDiscovery, startResearch } from "@/lib/workflows/tasks";
 import type { RunContext } from "@/lib/workflows/types";
 import { defineTool, type AnyAgentTool, type ToolResult } from "./types";
 
@@ -109,6 +109,48 @@ export function createChatTools(ctx: RunContext): AnyAgentTool[] {
           }
         }
         return ok(results);
+      },
+    }),
+    defineTool({
+      name: "search_openlabs",
+      description:
+        "Search the community platform (OpenLabs) for posts, discussions and projects near a topic. Read-only preview; " +
+        "nothing is stored. These are community posts, not peer-reviewed sources — never treat them as evidence. " +
+        "Use start_discovery to triage results into open research questions.",
+      schema: z.object({
+        query: z.string().min(2),
+        kinds: z.array(z.enum(["post", "project"])).optional(),
+        limit: z.number().int().min(1).max(25).optional(),
+      }),
+      async execute({ query, kinds, limit }) {
+        const source = ctx.deps.getDiscoverySource();
+        if (!source) return fail("No community platform is configured (set OPENLABS_AGENT_CREDENTIAL).");
+        const items = await source.search({ query, kinds, limit: limit ?? 10 });
+        return ok(
+          items.map((i) => ({
+            kind: i.kind,
+            title: i.title,
+            url: i.url,
+            author: i.author,
+            topic: i.topic,
+            metrics: i.metrics,
+            excerpt: i.excerpt.slice(0, 300),
+          })),
+        );
+      },
+    }),
+    defineTool({
+      name: "start_discovery",
+      description:
+        "Queue a background discovery task: search the community platform, triage what it finds against our research " +
+        "question, and record genuinely new gaps as open questions. Records questions only — never claims or evidence.",
+      schema: z.object({
+        queries: z.array(z.string().min(2)).min(1).max(4),
+        topic: z.string().optional(),
+      }),
+      async execute({ queries, topic }) {
+        const task = await startDiscovery(ctx.deps, { queries, topic, origin: "chat" });
+        return ok({ taskId: task.id, status: task.status, note: "Running in background; see the Runs page." });
       },
     }),
     defineTool({

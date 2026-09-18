@@ -15,6 +15,7 @@
  */
 export { OpenLabsPublisher } from "./publisher";
 export { OpenLabsCommentSource } from "./comment-source";
+export { OpenLabsDiscoverySource } from "./discovery";
 export { isOpenLabsConfigured, openLabsConfig, openLabsPostUrl } from "./config";
 export type { OpenLabsConfig } from "./config";
 export { OpenLabsError } from "./errors";

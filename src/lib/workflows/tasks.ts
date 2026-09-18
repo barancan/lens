@@ -2,6 +2,7 @@ import { createComment } from "@/lib/repo/comments";
 import { createTask, getTask } from "@/lib/repo/tasks";
 import type { Comment, Task, TaskOrigin } from "@/lib/types";
 import { commentWorkflow } from "./comment";
+import { discoverWorkflow } from "./discover";
 import { executeWorkflow, type RunOutcome } from "./engine";
 import { regenerateWorkflow } from "./regenerate";
 import { researchWorkflow } from "./research";
@@ -22,6 +23,8 @@ export async function runTask(taskId: string, deps: AgentDeps, opts: { resume?: 
       return executeWorkflow(commentWorkflow, taskId, deps, opts);
     case "regenerate_draft":
       return executeWorkflow(regenerateWorkflow, taskId, deps, opts);
+    case "discover":
+      return executeWorkflow(discoverWorkflow, taskId, deps, opts);
   }
 }
 
@@ -38,6 +41,28 @@ export async function startResearch(
     origin: input.origin,
     input: input.urls?.length ? { urls: input.urls } : {},
     parentTaskId: input.parentTaskId ?? null,
+  });
+  deps.launchTask(task.id);
+  return task;
+}
+
+/**
+ * Search a community platform for work near our research question and turn what
+ * it finds into open questions. Queries default to the research question itself.
+ */
+export async function startDiscovery(
+  deps: AgentDeps,
+  input: { queries?: string[]; topic?: string; origin: TaskOrigin },
+): Promise<Task> {
+  const queries = (input.queries ?? []).map((q) => q.trim()).filter(Boolean);
+  const objective = queries.length
+    ? `Discover community work on: ${queries.join("; ")}`
+    : "Discover community work related to the core research question";
+  const task = await createTask({
+    type: "discover",
+    objective,
+    origin: input.origin,
+    input: { ...(queries.length ? { queries } : {}), ...(input.topic ? { topic: input.topic } : {}) },
   });
   deps.launchTask(task.id);
   return task;

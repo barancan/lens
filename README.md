@@ -52,6 +52,7 @@ These are enforced in code, not only in prompts:
 - **Evidence needs a real source and a verbatim quote.** The quote must be found in that source's text; otherwise `ProvenanceError` is raised and the finding is recorded as rejected.
 - **Insights are always agent-generated.** A DB constraint enforces this. An insight must be `derived_from` existing nodes, and can never be attached as evidence.
 - **Comment text never becomes evidence.** A comment can raise a question; evidence comes only from sources the agent actually fetched.
+- **Neither does anything discovered on a community platform.** The discover workflow can only create `question` nodes — never a claim, observation or evidence row — and deliberately does not store discovered items as `sources`, so nothing can later be attached to one as evidence. Provenance lives in each question's `metadata.discoveredFrom`.
 - **Confidence is a transparent heuristic** over evidence strength and independence (`src/lib/knowledge/confidence.ts`). Statuses are `supported`, `contested`, `weak` and `unresolved` rather than true/false.
 - **Impact is a transparent heuristic too** (`src/lib/knowledge/impact.ts`): `headroom × reach`, where headroom is how much room a finding has left to move and reach is the saturated sum of what its neighbours — linked by a recorded `knowledge_edges` relationship, or by embedding similarity — stand to gain. It answers "would drilling into this move *other* findings?", and every score stores the breakdown and a plain-English reason list. Unlike confidence it depends on the neighbourhood, so it is recomputed in batches (end of each run, or **Knowledge → Recompute impact**) and never bumps `updated_at`.
 - **The score never steers the agent by itself.** It is shown to the operator, who can queue a finding for the next cycle; only then does the planner see it, at the top of its prompt, with the operator's note. The queue holds at most 10 findings and is ordered by hand (drag-and-drop on the dashboard) rather than by impact, since impact is derived and would otherwise reshuffle the operator's shortlist whenever a run rescores. A queued request is consumed once a run has actually stored knowledge, so a failed run leaves it queued.
@@ -70,6 +71,7 @@ All workflows run on one engine (`engine.ts`):
 | --- | --- |
 | **Research** (loop 1) | plan → search → select → read → extract → compare → store → synthesize → assess_impact → draft |
 | **Comment** (loop 2) | classify → research (bounded) → update_knowledge → draft_reply |
+| **Discover** (loop 3) | search → triage → record. Searches OpenLabs for posts, discussions and projects near the research question and records new gaps as open questions. |
 | **Regenerate** | rewrite a post or reply using operator feedback (earlier versions are kept in `metadata.revisions`) |
 | **Chat** | bounded tool-use loop. Tools: search_knowledge, get_claim, list_knowledge, get_source, search_literature, start_research, draft_post, respond_to_comment, list_unprocessed_comments, record_question, add_focus_directive, list_runs, get_run, get_task |
 
@@ -152,7 +154,9 @@ There is **no API key**. Authentication is a permanent `agentCredential`, obtain
    pnpm openlabs:smoke
    ```
 4. **Choose behavior.** Settings → OpenLabs sets the default topic, post type (discussion vs. claim), tags, and comment-polling limits. The card shows whether OpenLabs is actually connected (env-only) — the form is usable either way, but takes effect once `OPENLABS_AGENT_CREDENTIAL` is set.
-5. **Publishing stays operator-driven.** A draft still must be approved and then published by hand from the drafts UI — nothing reaches OpenLabs automatically on approval.
+5. **Discovery is read-only.** `OpenLabsDiscoverySource` only ever issues GETs against the public feed (`/api/v1/posts`, `/api/v1/projects`). Trigger it from the dashboard (**Discover on OpenLabs**) or from chat (`search_openlabs` for a preview, `start_discovery` to triage and record). Note that the platform's `search` narrows hard as terms are added — a query matching nothing is retried once with its longest term, so a long phrase does not silently read as "the platform has nothing".
+
+6. **Publishing stays operator-driven.** A draft still must be approved and then published by hand from the drafts UI — nothing reaches OpenLabs automatically on approval.
 
 ---
 
@@ -180,5 +184,6 @@ There is **no API key**. Authentication is a permanent `agentCredential`, obtain
 | --- | --- |
 | **A model provider** (e.g. BIOS, a local model) | Implement `LLMProvider` in `src/lib/providers/<name>/adapter.ts` and register it in `src/lib/llm/registry.ts`. Then select it per workflow in Settings. |
 | **A research source** (PubMed E-utilities, bioRxiv API, Reddit, web search, BIOS) | Implement `ResearchSource` in `src/lib/integrations/research/`, register it in `registry.ts`, and enable it in Settings → Project. |
+| **A discovery source** (another community platform) | Implement `DiscoverySource` (`src/lib/integrations/types.ts`) and add it to `getDiscoverySource()` in `src/lib/integrations/discovery.ts`. |
 | **Another publishing target** | Implement `Publisher` / `CommentSource` (see `src/lib/integrations/openlabs` for a worked example) and wire it into `getPublisher()` / `getCommentSource()`. |
 | **MCP tools** | Adapt `McpToolServer` tools into `AgentTool`s (`src/lib/integrations/mcp`). |

@@ -79,3 +79,51 @@ export interface CommentSource {
   /** Optional and additive so non-OpenLabs sources (and ManualPublisher-era code) stay valid; read-only. */
   getReception?(postExternalId: string): Promise<PostReception>;
 }
+
+// ---------------------------------------------------------------------------
+// Discovery
+// ---------------------------------------------------------------------------
+
+export const DISCOVERED_KINDS = ["post", "project"] as const;
+export type DiscoveredKind = (typeof DISCOVERED_KINDS)[number];
+
+export interface DiscoveryQuery {
+  query: string;
+  /** Platform topic slug, when the platform has topics. */
+  topic?: string;
+  kinds?: DiscoveredKind[];
+  limit?: number;
+}
+
+/**
+ * Something found on a community platform: a post, discussion or project.
+ *
+ * Deliberately NOT a `SearchResult`. Research sources yield literature that is
+ * fetched and becomes evidence; discovered items are community writing, which
+ * under the project's guardrails can raise questions but never become evidence.
+ * Keeping the types apart makes that hard to get wrong by accident.
+ */
+export interface DiscoveredItem {
+  /** Adapter id that produced this item, e.g. "openlabs". */
+  sourceId: string;
+  kind: DiscoveredKind;
+  externalId: string;
+  title: string;
+  /** Body excerpt or summary; may be empty. */
+  excerpt: string;
+  url: string | null;
+  author: string | null;
+  topic: string | null;
+  tags: string[];
+  createdAt: string | null;
+  /** Reception signals, when the platform exposes them. */
+  metrics: { comments?: number; upvotes?: number; threads?: number };
+}
+
+export interface DiscoverySource {
+  readonly id: string;
+  readonly description: string;
+  /** False when required credentials/config are missing. */
+  isEnabled(): boolean;
+  search(query: DiscoveryQuery): Promise<DiscoveredItem[]>;
+}

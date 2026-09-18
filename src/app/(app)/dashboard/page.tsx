@@ -15,6 +15,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getCommentSource } from "@/lib/approvals/comment-source";
+import { isOpenLabsConfigured } from "@/lib/integrations/openlabs";
 import { MAX_DRILL_DOWN_QUEUE } from "@/lib/knowledge/service";
 import { listPosts } from "@/lib/repo/posts";
 import { listReplies } from "@/lib/repo/replies";
@@ -24,6 +25,7 @@ import { getSettings } from "@/lib/settings/service";
 import { TASK_STATUSES } from "@/lib/types";
 import { getKnowledgeService } from "@/lib/workflows/runtime";
 import { formatDuration } from "../runs/format";
+import { DiscoverForm } from "./discover-form";
 import { DrillDownQueue } from "./drill-down-queue";
 import { PollCommentsButton } from "./poll-comments-button";
 import { RunResearchForm } from "./run-research-form";
@@ -63,6 +65,7 @@ export default async function DashboardPage() {
   // Only render the poll button when a comment source is actually
   // configured — otherwise clicking it would always no-op.
   const canPollComments = getCommentSource() !== null;
+  const openLabsConfigured = isOpenLabsConfigured();
 
   const statTiles: { label: string; value: number }[] = [
     { label: "Claims", value: stats.nodesByType.claim },
@@ -161,9 +164,14 @@ export default async function DashboardPage() {
       </Section>
 
       <div className="mb-8 grid items-start gap-6 lg:grid-cols-4">
-        <Section title="Run research" className="mb-0 lg:col-span-1">
-          <RunResearchForm />
-        </Section>
+        <div className="flex flex-col gap-6 lg:col-span-1">
+          <Section title="Run research" className="mb-0">
+            <RunResearchForm />
+          </Section>
+          <Section title="Discover on OpenLabs" className="mb-0">
+            <DiscoverForm configured={openLabsConfigured} />
+          </Section>
+        </div>
 
         <Section title="Queued for drill-down" className="mb-0 lg:col-span-3">
           <DrillDownQueue

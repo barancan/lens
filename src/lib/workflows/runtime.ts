@@ -1,6 +1,7 @@
 import "server-only";
 import { after } from "next/server";
 import { fetchUrlDocument } from "@/lib/integrations/research/url-fetch";
+import { getDiscoverySource } from "@/lib/integrations/discovery";
 import { getResearchSources } from "@/lib/integrations/research/registry";
 import { createKnowledgeService, type KnowledgeService } from "@/lib/knowledge/service";
 import { getEmbeddingProvider, getProvider } from "@/lib/llm/registry";
@@ -32,6 +33,7 @@ export function getAgentDeps(): AgentDeps {
     knowledge: getKnowledgeService(),
     getProvider,
     getResearchSources,
+    getDiscoverySource,
     fetchUrl: (url) => fetchUrlDocument(url),
     launchTask: (taskId) => launchInBackground(taskId, deps),
   };
